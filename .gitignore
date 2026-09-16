@@ -1,0 +1,33 @@
+# Secrets — never commit these
+.env
+.env.*
+
+# Virtual environment
+pp_env/
+venv/
+.venv/
+
+# Python build and cache artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local databases
+*.db
+*.sqlite3
+
+# Vector index
+faiss_index/
+
+# Embedding model cache
+.cache/
+models/
+
+# Editor and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
