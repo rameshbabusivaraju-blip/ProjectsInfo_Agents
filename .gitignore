@@ -1,6 +1,7 @@
 # Secrets — never commit these
 .env
 .env.*
+!.env.example
 
 # Virtual environment
 pp_env/
