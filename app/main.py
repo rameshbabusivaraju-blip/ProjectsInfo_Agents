@@ -6,6 +6,7 @@ exists (see the walking skeleton rationale in the plan of action).
 """
 
 from fastapi import FastAPI
+import os
 
 app = FastAPI(
     title="ProjectPulse API",
