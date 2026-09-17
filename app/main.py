@@ -15,5 +15,5 @@ app = FastAPI(
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Return a fixed response so a caller can confirm the service is running."""
-    return {"status": "ok"}
+    """Return service status and version so callers can confirm what is deployed."""
+    return {"status": "ok", "version": "0.1.0"}
