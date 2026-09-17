@@ -17,4 +17,3 @@ app = FastAPI(
 def health() -> dict[str, str]:
     """Return service status and version so callers can confirm what is deployed."""
     return {"status": "ok", "version": "0.1.0"}
-    
