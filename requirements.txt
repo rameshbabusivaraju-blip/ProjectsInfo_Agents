@@ -25,3 +25,6 @@ typing_extensions==4.16.0
 uvicorn==0.53.0
 watchfiles==1.2.0
 websockets==17.1
+sqlmodel==0.0.42
+SQLAlchemy==2.0.54
+greenlet==3.5.6
