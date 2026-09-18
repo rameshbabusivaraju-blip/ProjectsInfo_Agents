@@ -10,7 +10,7 @@ Run it with:  python -m app.jira_connector
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -67,10 +67,11 @@ def _dt(value: str | None) -> datetime | None:
     make date comparisons in SQL unreliable, so everything is normalised to UTC
     and the timezone marker is dropped.
     """
+
     if not value:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed.astimezone(UTC).replace(tzinfo=None)
 
 
 def _required_dt(value: str) -> datetime:
