@@ -36,7 +36,7 @@ HEADERS = {
 }
 
 # ADR-016 requires every branch and commit message to carry the ticket id.
-TICKET_PATTERN = re.compile(r"AGENTS-\d+")
+TICKET_PATTERN = re.compile(r"AGENTS[-\s]?(\d+)", re.IGNORECASE)
 
 
 def _get_pages(path: str, **params: Any) -> list[dict[str, Any]]:
@@ -79,11 +79,17 @@ def _required_dt(value: str) -> datetime:
 
 
 def _ticket_key(textual: str | None) -> str | None:
-    """Pull the first AGENTS-nn out of a commit message or branch name."""
+    """Pull the first ticket id out of a commit message or branch name.
+
+    Tolerates the variations GitHub introduces — a generated pull request title
+    turns AGENTS-19-render-deploy into "Agents 19 render deploy", and a squash
+    merge then uses that title as the commit message. The matched id is
+    normalised back to the canonical AGENTS-nn form.
+    """
     if not textual:
         return None
     match = TICKET_PATTERN.search(textual)
-    return match.group(0) if match else None
+    return f"AGENTS-{match.group(1)}" if match else None
 
 
 def fetch_commits() -> list[dict[str, Any]]:
