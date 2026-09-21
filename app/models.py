@@ -68,3 +68,46 @@ class WorkLog(SQLModel, table=True):
     started: datetime
     seconds: int
     comment: str | None = None
+
+class Commit(SQLModel, table=True):
+    """One commit on the default branch."""
+
+    __tablename__ = "commits"
+
+    sha: str = Field(primary_key=True)
+    message: str
+    author_login: str | None = None
+    authored_at: datetime
+    # Ticket id parsed out of the commit message, e.g. AGENTS-24. None means
+    # the commit broke the ADR-016 convention — that is question C5.
+    ticket_key: str | None = None
+
+
+class PullRequest(SQLModel, table=True):
+    """One pull request, open, closed or merged."""
+
+    __tablename__ = "pull_requests"
+
+    number: int = Field(primary_key=True)
+    title: str
+    author_login: str | None = None
+    state: str
+    created_at: datetime
+    merged_at: datetime | None = None
+    closed_at: datetime | None = None
+    head_branch: str
+    ticket_key: str | None = None
+
+
+class PrReview(SQLModel, table=True):
+    """One review left on a pull request."""
+
+    __tablename__ = "pr_reviews"
+
+    id: int = Field(primary_key=True)
+    pr_number: int = Field(foreign_key="pull_requests.number")
+    reviewer_login: str | None = None
+    # APPROVED, CHANGES_REQUESTED or COMMENTED
+    state: str
+    submitted_at: datetime | None = None
+    body: str | None = None
