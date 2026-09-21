@@ -1,0 +1,362 @@
+# ProjectPulse — Code Reference
+
+What every file and every function in the codebase is for, as of the end of
+SCRUM Sprint 2.
+
+---
+
+## Execution entry points
+
+There are three ways the code is run today. Everything else is a supporting part
+called by one of them.
+
+| Command | What happens |
+|---|---|
+| `uvicorn app.main:app --reload` | Starts the web service locally on port 8000. Also what Render runs in production, with different host and port settings. |
+| `python -m app.jira_connector` | Refreshes the whole database from Jira, then prints velocity per sprint. |
+| `python -m app.github_connector` | Refreshes the commit, pull request and review tables from GitHub, then prints review turnaround and any unreviewed merges. |
+
+**Order matters.** The Jira connector currently clears every table, including the
+GitHub ones. Run Jira first, GitHub second. Fixing this is carried-over work.
+
+---
+
+## `app/__init__.py` and `tests/__init__.py`
+
+Both are empty. Their presence is what makes `app` and `tests` importable as
+packages, which is why `from app.main import app` resolves in the test files.
+Without them, imports fail with an error that reads as though the file does not
+exist.
+
+---
+
+## `app/main.py` — the web service
+
+### `app`
+
+The FastAPI application object. Routes are registered on it, and the server runs
+it. Its title, description and version are used to generate the Swagger
+documentation page automatically, which is why no separate API documentation is
+maintained.
+
+### `health()`
+
+Handles `GET /health` and returns `{"status": "ok", "version": "0.1.0"}`.
+
+Its purpose is to give the deployment pipeline something real to build, test and
+deploy while the application had no functionality. It is also how you confirm the
+deployed service is alive.
+
+It reports healthy unconditionally, checking nothing. That is correct while there
+is nothing to check, and it is recorded as something to revisit now that the
+database exists — a service that reports healthy while its database is
+unreachable is worse than no health endpoint at all.
+
+---
+
+## `app/db.py` — database connection
+
+### `engine`
+
+The connection to the SQLite database file. The file path defaults to
+`projectpulse.db` in the working directory and can be overridden with the
+`PROJECTPULSE_DB` environment variable, which is what lets tests point at a
+different database.
+
+Every part of the system that touches the database goes through this one object.
+
+### `init_db()`
+
+Creates any table that does not already exist.
+
+It deliberately does not alter tables that do exist. If a column is added to a
+model, `init_db` will not add it to an existing database — the database must be
+deleted and rebuilt. Proper migrations would need a tool such as Alembic, which
+is not warranted at this stage.
+
+### The `from app import models` line
+
+Imported but never used, which is normally an error. It is here because importing
+the module is what registers the table classes with SQLModel. Without it,
+`init_db` would find no tables to create and would silently do nothing. The
+`# noqa: F401` comment tells the linter to allow it.
+
+---
+
+## `app/models.py` — the database schema
+
+Each class in this file defines one table. SQLModel turns the class into both a
+database table and a typed Python object, so the same definition serves for
+storage and for validation.
+
+### Jira tables
+
+| Class | Table | What each row represents |
+|---|---|---|
+| `Person` | `people` | One human, identified by their Jira account id. The `github_username` column exists so Jira and GitHub activity can eventually be attributed to the same person. |
+| `Sprint` | `sprints` | One sprint, with its name, state, goal and its start, end and completion dates. The completion date differs from the end date whenever a sprint is closed late, which is itself a useful signal. |
+| `Ticket` | `tickets` | One Jira issue of any kind. `hierarchy_level` distinguishes epics (1) from stories and tasks (0). `parent_key` points back at another row in this same table, which is how an issue is linked to its epic. `status_category` holds the underlying category — `new`, `indeterminate` or `done` — because status names are configurable and can be renamed at any time. |
+| `TicketSprint` | `ticket_sprints` | One appearance of one ticket in one sprint. A ticket with two rows here moved between sprints; `position` records the order, so the last row is where it ended up. |
+| `WorkLog` | `work_logs` | One logged entry of effort: who, against which ticket, when, and how many seconds. Seconds are stored exactly as Jira reports them and converted at the point of use. |
+
+### GitHub tables
+
+| Class | Table | What each row represents |
+|---|---|---|
+| `Commit` | `commits` | One commit on the default branch. `ticket_key` holds the ticket id found in the commit message, or nothing if the message did not contain one — counting those is a process-compliance measure, not an error. |
+| `PullRequest` | `pull_requests` | One pull request. The three date columns distinguish opened, merged and closed, which is what makes turnaround and time-open measurable. `head_branch` is kept because the branch name is the other place a ticket id appears. |
+| `PrReview` | `pr_reviews` | One review on a pull request, including whether it approved or requested changes, and the reviewer's comment text. |
+
+---
+
+## `app/jira_connector.py` — Jira ingestion
+
+### Configuration read at import
+
+All values come from `.env` so that nothing site-specific is written into the
+code.
+
+| Setting | What it is for |
+|---|---|
+| `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL`, `ATLASSIAN_API_TOKEN` | The Atlassian site and the credentials used for it. Atlassian uses HTTP Basic authentication with the email as username and the API token as password. |
+| `JIRA_PROJECT_KEY` | Which project to read. Currently `AGENTS`. |
+| `JIRA_BOARD_ID` | Which board to read sprints from. Sprints belong to a board, not to a project, so the project key alone is not enough. |
+| `POINTS_FIELD` | The custom field id holding story points. Differs per Atlassian site, so it is configuration rather than a constant. |
+| `SPRINT_FIELD` | The custom field id holding sprint membership. Same reasoning. |
+
+### Helper functions
+
+**`_get(path, **params)`**
+Makes one authenticated call to Jira and returns the parsed response. It raises
+an exception on any HTTP error rather than returning an empty result, so a wrong
+token or a mistyped URL fails immediately and visibly instead of producing empty
+tables that look like a project with no data in it.
+
+**`_dt(value)`**
+Converts a Jira timestamp into a datetime in UTC with the timezone marker
+removed, and returns nothing when the field is absent.
+
+The normalisation matters because Jira returns a mixture of offsets — some fields
+come back as `+05:30`, others as `Z`. Comparing dates with different offsets in
+SQLite produces wrong answers rather than errors, so every date is converted to
+one form on the way in.
+
+**`_required_dt(value)`**
+The same conversion for fields Jira always provides, such as creation date. It
+exists so the rest of the code does not have to handle a missing value that
+cannot occur.
+
+**`_adf_text(node)`**
+Turns a Jira description or comment into plain text.
+
+Jira stores these as Atlassian Document Format, which is a nested JSON tree where
+formatting, links and lists are structure and only nodes marked as text contain
+words. This function walks that tree and joins the words it finds. It is needed
+because the raw JSON is useless both for reading and, later, for search indexing.
+
+### Fetch functions
+
+**`fetch_sprints()`**
+Returns every sprint on the board — past, active and future.
+
+It calls the Agile API, which is a separate API from the one that serves issues,
+on the same host. Sprints do not exist in Jira's main API at all, which is a
+common source of confusion when building against it.
+
+**`fetch_issues()`**
+Returns every issue in the project, with all fields.
+
+It follows Jira's pagination by passing the continuation token back until Jira
+stops supplying one. This is the part most often got wrong: a connector that
+requests one page works perfectly on a small project and silently loses data once
+the project exceeds a hundred issues.
+
+**`fetch_worklogs(issue_key)`**
+Returns the logged hours for a single issue.
+
+Work logs are not included in the issue search response, so this is one extra
+call per issue. Acceptable at the current size; would need a different approach
+at thousands of issues.
+
+### Loading
+
+**`load()`**
+Runs the whole ingestion.
+
+It fetches everything first, before touching the database. If a call fails part
+way through, the existing database is left as it was rather than half-rewritten.
+
+It then drops and recreates all tables and writes the fresh data. Rebuilding
+rather than updating is deliberate: the database is a copy of Jira, not an
+independent record, so reconciling differences would be more code, would risk
+leaving deleted issues behind as stale rows, and would gain nothing at this
+volume.
+
+Everything is written inside a single transaction, so either the whole mirror
+lands or nothing does.
+
+**`remember(user)` — defined inside `load`**
+Records a Jira user the first time they are encountered and returns their account
+id.
+
+People appear on issues as assignees and on work logs as authors. Collecting them
+through one function means the same person is written once, however many times
+they appear.
+
+### Reporting
+
+**`VELOCITY_SQL`**
+The query answering catalogue question A1 — points delivered per sprint.
+
+Two details in it matter. A ticket counts towards the last sprint it appeared in,
+found by taking the highest position in `ticket_sprints`, which is how Scrum
+treats spillover. And the filter is on `status_category = 'done'` rather than on
+a status name, because names can be renamed and categories cannot.
+
+It is held as a named constant rather than inline because it will be reused
+unchanged as the reference query when the agent is evaluated.
+
+**`velocity()`**
+Runs that query and prints one line per sprint.
+
+---
+
+## `app/github_connector.py` — GitHub ingestion
+
+### Configuration read at import
+
+| Setting | What it is for |
+|---|---|
+| `GITHUB_TOKEN` | A fine-grained personal access token with read-only access to contents, pull requests and metadata on one repository. |
+| `GITHUB_OWNER`, `GITHUB_REPO` | Which repository to read. |
+| `TICKET_PATTERN` | The pattern `AGENTS-<number>`, used to find ticket ids inside commit messages and branch names. This is the only link between GitHub data and Jira data. |
+
+### Helper functions
+
+**`_get_pages(path, **params)`**
+Makes an authenticated call and keeps requesting further pages until one comes
+back with fewer than a hundred items, which is how GitHub signals the end of a
+list. Returns everything collected.
+
+**`_dt(value)` and `_required_dt(value)`**
+Convert GitHub timestamps into the same UTC form used for Jira data. Both systems
+must store dates identically or any query that joins them will compare
+incomparable values.
+
+**`_ticket_key(text)`**
+Finds the first `AGENTS-<number>` in a piece of text and returns it, or nothing if
+there is none.
+
+This one small function is what connects the two halves of the dataset. It is
+also the reason the development process requires the ticket id in every branch
+name and at the start of every commit message — without that convention there is
+nothing to match on.
+
+### Fetch functions
+
+**`fetch_commits()`**
+Every commit on the default branch.
+
+**`fetch_pull_requests()`**
+Every pull request in any state — open, closed or merged. Asking only for open
+ones would omit all the historical data the metrics depend on.
+
+**`fetch_reviews(pr_number)`**
+The reviews left on one pull request. One additional call per pull request.
+
+### Loading
+
+**`load()`**
+Clears and rewrites only the three GitHub tables, leaving Jira data untouched.
+Reviews are deleted before pull requests because they reference them.
+
+For each commit it stores the message and looks for a ticket id inside it. For
+each pull request it prefers the ticket id from the branch name and falls back to
+the title, because the branch name is governed by the naming convention and the
+title is not.
+
+### Reporting
+
+**`REVIEW_TURNAROUND_SQL`**
+Answers catalogue question C1. For each pull request it finds the earliest
+review, measures the gap from when the pull request was opened, and averages
+those gaps across all pull requests. SQLite has no duration type, so the
+calculation works in day numbers and multiplies by 24 to give hours.
+
+**`UNREVIEWED_PRS_SQL`**
+Answers catalogue question J1. Lists merged pull requests that have no review row
+at all. This is a compliance check on the development process rather than a
+performance measure — it confirms the review step actually happened rather than
+being assumed.
+
+**`report()`**
+Runs both queries and prints the results.
+
+---
+
+## `tests/` — the test suite
+
+**`tests/test_health.py` → `test_health_returns_ok()`**
+Calls `GET /health` through FastAPI's test client and asserts both the status
+code and the exact response body.
+
+The test client exercises the application in-process, so no server starts and no
+port is used. That is what allows the test to run unchanged in the pipeline.
+
+**`tests/test_db.py` → `test_schema_creates_expected_tables()`**
+Builds the schema in a database held entirely in memory and asserts the exact set
+of table names.
+
+Two design points. The in-memory database leaves no file behind, so the test
+behaves identically on the first run and the hundredth. And the assertion
+compares the whole set rather than checking that particular tables exist, so
+adding a table without updating this test fails the build — deliberately, because
+a new table is a schema change that should be a conscious decision.
+
+---
+
+## `.github/workflows/ci.yml` — the pipeline
+
+### The `test` job
+
+Runs on every pull request targeting `main`, and again on every push to `main`
+after a merge. It is the required status check, so a pull request cannot be
+merged while it is failing.
+
+| Step | What it does |
+|---|---|
+| Check out the repository | Copies the code onto a clean Linux machine created for this run |
+| Set up Python | Installs the version named in `.python-version` |
+| Install dependencies | Installs from `requirements-dev.txt`, which pulls in the runtime requirements as well |
+| Lint with ruff | Fails the build on unused imports, undefined names, import ordering and a set of common bug patterns |
+| Type check with mypy | Fails the build on type errors, in strict mode, so every function must be annotated |
+| Run tests | Runs the test suite |
+
+Lint and type checking run before the tests because they take seconds and the
+tests take longer. All three run inside the one job rather than as separate jobs,
+because the branch protection rule requires a check named `test` — splitting them
+would mean registering new required checks, and forgetting to do so would leave
+failures that do not block a merge.
+
+### The `deploy` job
+
+Runs only after `test` passes, and only on a push to `main` rather than on a pull
+request. It calls Render's deploy hook, which is stored as an encrypted
+repository secret rather than in the file.
+
+The dependency on `test` is what makes deployment safe: broken code cannot reach
+the live service. The condition on the event type is what stops every pull
+request deploying to production.
+
+---
+
+## Configuration files
+
+| File | Purpose |
+|---|---|
+| `.env` | Every credential and site-specific setting: Atlassian site, email and token, Jira project key, board id and custom field ids, GitHub token, owner and repository. Never committed. |
+| `.python-version` | The Python version, read by both the pipeline and Render. Keeping it in one file means the version cannot drift between development, CI and production — which it did once, before this file existed. |
+| `requirements.txt` | Runtime dependencies with exact versions. This is what Render installs. |
+| `requirements-dev.txt` | Development and CI dependencies — ruff, mypy, pytest — plus a reference that pulls in the runtime file. Keeping them separate stops a linter and a type checker being installed into production. |
+| `pyproject.toml` | Configuration for ruff and mypy: which lint rules are active, the target Python version, and strict type checking. |
+| `.gitignore` | Keeps `.env`, the virtual environment, the database file, caches, editor settings and exploratory scripts out of the repository. On a public repository this file is the main thing standing between a credential and the internet. |
