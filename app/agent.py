@@ -74,7 +74,7 @@ def metric_path(state: AgentState) -> AgentState:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(sql)
         cols = [d[0] for d in cur.description]
-        state["rows"] = [dict(zip(cols, row)) for row in cur.fetchall()]
+        state["rows"] = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
     return state
 
 
