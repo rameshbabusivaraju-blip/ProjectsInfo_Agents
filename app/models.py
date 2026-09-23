@@ -111,3 +111,17 @@ class PrReview(SQLModel, table=True):
     state: str
     submitted_at: datetime | None = None
     body: str | None = None
+
+class ConfluencePage(SQLModel, table=True):
+    """One Confluence page — current content only, not a history."""
+
+    __tablename__ = "confluence_pages"
+
+    id: str = Field(primary_key=True)
+    title: str
+    space_key: str
+    url: str
+    version: int
+    version_author_id: str | None = Field(default=None, foreign_key="people.account_id")
+    updated: datetime
+    body_text: str | None = None
