@@ -11,9 +11,10 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from openpyxl import load_workbook
 from sqlmodel import Session, SQLModel, create_engine
 
-from app import agent
+from app import agent, excel_export
 from app.github_connector import REVIEW_TURNAROUND_SQL, UNREVIEWED_PRS_SQL
 from app.jira_connector import VELOCITY_SQL
 from app.models import PrReview, PullRequest, Sprint, Ticket, TicketSprint
@@ -140,3 +141,67 @@ def test_metric_path_runs_unreviewed_prs_sql(
     state = agent.metric_path({"metric_key": "unreviewed_prs"})
 
     assert state["rows"] == [{"number": 2, "title": "Unreviewed change"}]
+
+
+# ---------------------------------------------------------------------------
+# export_path() — must pick the most recent sprint and write it to Excel
+# ---------------------------------------------------------------------------
+
+
+def test_export_path_writes_last_sprint_to_excel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """export_path must pick the most recent sprint by start_date, not any of them."""
+    db_path = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(
+            Sprint(id=1, name="Sprint 1", state="closed", start_date=datetime(2026, 1, 1))
+        )
+        session.add(
+            Sprint(id=2, name="Sprint 2", state="closed", start_date=datetime(2026, 1, 15))
+        )
+        session.add(
+            Ticket(
+                key="AGENTS-1",
+                summary="First ticket",
+                issue_type="Task",
+                hierarchy_level=0,
+                status="Done",
+                status_category="done",
+                story_points=5.0,
+                created=datetime(2026, 1, 1),
+                updated=datetime(2026, 1, 2),
+            )
+        )
+        session.add(
+            Ticket(
+                key="AGENTS-2",
+                summary="Second ticket",
+                issue_type="Task",
+                hierarchy_level=0,
+                status="Done",
+                status_category="done",
+                story_points=8.0,
+                created=datetime(2026, 1, 15),
+                updated=datetime(2026, 1, 16),
+            )
+        )
+        session.add(TicketSprint(ticket_key="AGENTS-1", sprint_id=1, position=0))
+        session.add(TicketSprint(ticket_key="AGENTS-2", sprint_id=2, position=0))
+        session.commit()
+
+    monkeypatch.setattr(agent, "DB_PATH", str(db_path))
+    monkeypatch.setattr(excel_export, "EXPORTS_DIR", tmp_path)
+
+    state = agent.export_path({"metric_key": "export_excel"})
+
+    assert state["rows"] == [{"sprint": "Sprint 2", "delivered": 8.0}]
+    assert state["answer"] == f"Wrote 1 row(s) to {tmp_path / 'last_sprint_velocity.xlsx'}."
+
+    workbook = load_workbook(tmp_path / "last_sprint_velocity.xlsx")
+    worksheet = workbook.active
+    assert worksheet is not None
+    assert [cell.value for cell in worksheet[2]] == ["Sprint 2", 8.0]
