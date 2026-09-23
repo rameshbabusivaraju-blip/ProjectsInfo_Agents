@@ -7,7 +7,7 @@ turnaround, unreviewed PRs — and refuses anything else honestly.
 
 import sqlite3
 import sys
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -26,7 +26,7 @@ class AgentState(TypedDict, total=False):
 
     question: str
     metric_key: str
-    rows: list[dict]
+    rows: list[dict[str, Any]]
     answer: str
 
 

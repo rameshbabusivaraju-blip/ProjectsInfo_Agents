@@ -6,6 +6,7 @@ OpenAI / Anthropic / Gemini is a config change, not a code change.
 """
 
 import os
+from typing import Any
 
 from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
@@ -29,7 +30,7 @@ _MODELS = {
 }
 
 
-def get_llm(tier: str):
+def get_llm(tier: str) -> Any:
     """Return a chat model for the given tier.
 
     tier: "fast" (classification, routing, SQL generation) or
@@ -43,7 +44,7 @@ def get_llm(tier: str):
     model = _MODELS[tier][provider]
 
     if provider == "anthropic":
-        kwargs = {"model": model, "max_tokens": 1024}  # required on Anthropic
+        kwargs: dict[str, Any] = {"model": model, "max_tokens": 1024}  # required on Anthropic
         if model.startswith("claude-haiku"):
             kwargs["temperature"] = 0  # rejected on Sonnet 5
         return ChatAnthropic(**kwargs)
