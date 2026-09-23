@@ -27,6 +27,9 @@ faiss_index/
 .cache/
 models/
 
+# Generated Excel exports
+exports/
+
 # Editor and OS
 .vscode/
 .idea/
@@ -36,7 +39,3 @@ Thumbs.db
 # Spikes — throwaway exploration, never committed
 spike_*.py
 spike_out.txt
-
-ruff check .
-mypy app tests
-pytest -q
