@@ -21,4 +21,5 @@ def test_schema_creates_expected_tables() -> None:
         "commits",
         "pull_requests",
         "pr_reviews",
+        "confluence_pages",
     }
