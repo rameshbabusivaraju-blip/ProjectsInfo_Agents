@@ -28,7 +28,7 @@ jobs:
         run: ruff check .
 
       - name: Type check with mypy
-        run: mypy app tests
+        run: mypy app tests eval
         
       - name: Run tests
         run: pytest -q
