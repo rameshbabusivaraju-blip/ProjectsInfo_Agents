@@ -42,7 +42,10 @@ class AgentState(TypedDict, total=False):
     answer: str
 
 class Classification(BaseModel):
-    """Structured output for classify_intent: one known query, a narrative lookup, one action, or 'other'."""
+    """Structured output for classify_intent.
+
+    One known query, a narrative lookup, one action to take, or 'other'.
+    """
 
     metric_key: Literal[
         "velocity", "review_turnaround", "unreviewed_prs", "export_excel", "narrative", "other"
@@ -87,7 +90,7 @@ def classify_intent(state: AgentState) -> AgentState:
 
 
 def route(state: AgentState) -> str:
-    """Conditional edge: send the export action, narrative lookups and refusals down their own paths."""
+    """Conditional edge: routes export, narrative and refusal cases to their own paths."""
     if state["metric_key"] == "other":
         return "refuse"
     if state["metric_key"] == "export_excel":
@@ -146,10 +149,11 @@ def narrative_path(state: AgentState) -> AgentState:
     answers honestly instead of guessing -- an empty prompt would tempt the
     strong-tier model to invent an answer from outside the retrieved data.
     """
-    results = search(state["question"], state["doc_type"])
+    doc_type = state["doc_type"]
+    results = search(state["question"], doc_type)
     if not results:
         state["rows"] = []
-        state["answer"] = f"No matching content found in the project's {state['doc_type']} documents."
+        state["answer"] = f"No matching content found in the project's {doc_type} documents."
         return state
     state["rows"] = [{"text": r.text, "doc_id": r.doc_id, "score": r.score} for r in results]
     return state
