@@ -5,9 +5,13 @@ three questions with a working query today — velocity, PR review
 turnaround, unreviewed PRs — and refuses anything else honestly.
 
 Answers the three known metric questions with a working query — velocity,
-PR review turnaround, unreviewed PRs — refuses anything else honestly, and
-can write the last sprint's velocity to a formatted Excel file (AGENTS-31,
-catalogue question I4, ADR-010).
+PR review turnaround, unreviewed PRs — and can write the last sprint's
+velocity to a formatted Excel file (AGENTS-31, catalogue question I4,
+ADR-010).
+
+AGENTS-39 adds the fourth path: narrative questions, answered by AGENTS-38's
+filtered retrieval over the Confluence documents rather than SQL. Only a
+genuine "other" now falls through to refuse_path.
 """
 
 import sqlite3
@@ -23,53 +27,73 @@ from app.excel_export import export_to_excel
 from app.github_connector import REVIEW_TURNAROUND_SQL, UNREVIEWED_PRS_SQL
 from app.jira_connector import VELOCITY_SQL
 from app.llm.provider import get_llm
- 
+from app.retrieval import search
+
 DB_PATH = "projectpulse.db"
- 
- 
+
+
 class AgentState(TypedDict, total=False):
     """State passed between nodes. Grows as more paths are added."""
- 
+
     question: str
     metric_key: str
+    doc_type: str
     rows: list[dict[str, Any]]
     answer: str
- 
+
 class Classification(BaseModel):
-    """Structured output for classify_intent: one known query, one action, or 'other'."""
- 
+    """Structured output for classify_intent: one known query, a narrative lookup, one action, or 'other'."""
+
     metric_key: Literal[
-        "velocity", "review_turnaround", "unreviewed_prs", "export_excel", "other"
+        "velocity", "review_turnaround", "unreviewed_prs", "export_excel", "narrative", "other"
     ] = Field(
-        description="Which known query answers the question, 'export_excel' to write "
-        "the last sprint's velocity to a file, or 'other' if none fits"
+        description="Which known query answers the question, 'narrative' if it is answered by "
+        "searching the project's own documents rather than a database query, 'export_excel' to "
+        "write the last sprint's velocity to a file, or 'other' if none fits"
     )
- 
+    doc_type: Literal[
+        "charter", "decision_log", "general", "plan_of_action", "pm_notes",
+        "question_catalogue", "raid_log", "retro", "sprint_summary",
+    ] | None = Field(
+        default=None,
+        description="Which document type to search. Only set when metric_key is 'narrative'. "
+        "Matches AGENTS-37's per-doc-type FAISS indexes, hand-maintained same as "
+        "doc_type_rules.json (RAID log A2: the document set stays small enough for that).",
+    )
+
 _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
      "Classify the question into exactly one known query or action, or 'other' if none fits.\n"
      "velocity = sprint velocity, points completed per sprint\n"
      "review_turnaround = average pull request review turnaround time\n"
      "unreviewed_prs = pull requests merged without a review\n"
-     "export_excel = write the last sprint's velocity to an Excel file"),
+     "export_excel = write the last sprint's velocity to an Excel file\n"
+     "narrative = answered by searching the project's own documents, not a database query -- "
+     "when you pick this, also set doc_type to whichever of charter, decision_log, general, "
+     "plan_of_action, pm_notes, question_catalogue, raid_log, retro, sprint_summary the "
+     "question is actually about"),
     ("human", "{question}"),
 ])
- 
- 
+
+
 def classify_intent(state: AgentState) -> AgentState:
-    """Decide which of the three known SQL queries answers the question, or 'other'."""
+    """Decide which known query, action or document search answers the question, or 'other'."""
     chain = _CLASSIFY_PROMPT | get_llm("fast").with_structured_output(Classification)
     result = chain.invoke({"question": state["question"]})
     state["metric_key"] = result.metric_key
+    if result.doc_type:
+        state["doc_type"] = result.doc_type
     return state
- 
- 
+
+
 def route(state: AgentState) -> str:
-    """Conditional edge: send the export action and refusals down their own paths."""
+    """Conditional edge: send the export action, narrative lookups and refusals down their own paths."""
     if state["metric_key"] == "other":
         return "refuse"
     if state["metric_key"] == "export_excel":
         return "export"
+    if state["metric_key"] == "narrative":
+        return "narrative"
     return "metric"
  
  
@@ -107,13 +131,38 @@ def export_path(state: AgentState) -> AgentState:
     return state
  
  
+def narrative_path(state: AgentState) -> AgentState:
+    """Retrieve the top matching chunks for a narrative question (AGENTS-39).
+
+    Mirrors metric_path: it only gathers data into state["rows"], in the same
+    shape compose_answer already expects, so compose_answer needs no change to
+    handle retrieval instead of SQL. Uses AGENTS-38's search(), which confines
+    the search to state["doc_type"] and applies whatever ticket/date filters
+    were passed (none, here -- this ticket only wires the plain lookup in).
+
+    A combined filter or a genuinely unmatched question can make search()
+    return nothing (ADR-003: accept lower recall). That is answered honestly
+    here rather than handed to compose_answer, the same way refuse_path
+    answers honestly instead of guessing -- an empty prompt would tempt the
+    strong-tier model to invent an answer from outside the retrieved data.
+    """
+    results = search(state["question"], state["doc_type"])
+    if not results:
+        state["rows"] = []
+        state["answer"] = f"No matching content found in the project's {state['doc_type']} documents."
+        return state
+    state["rows"] = [{"text": r.text, "doc_id": r.doc_id, "score": r.score} for r in results]
+    return state
+
+
 def refuse_path(state: AgentState) -> AgentState:
-    """Answer honestly when the question needs document search, not built yet."""
+    """Answer honestly when the question matches none of the known paths."""
     state["rows"] = []
     state["answer"] = (
-        "That needs document search over Confluence, which isn't built yet. "
-        "Right now I can answer sprint velocity, PR review turnaround, PRs "
-        "merged without review, and export the last sprint's velocity to Excel."
+        "I can answer sprint velocity, PR review turnaround, PRs merged "
+        "without review, export the last sprint's velocity to Excel, or "
+        "questions answered by the project's own documents. This question "
+        "doesn't match any of those."
     )
     return state
  
@@ -139,17 +188,24 @@ graph = StateGraph(AgentState)
 graph.add_node("classify_intent", classify_intent)
 graph.add_node("metric_path", metric_path)
 graph.add_node("export_path", export_path)
+graph.add_node("narrative_path", narrative_path)
 graph.add_node("refuse_path", refuse_path)
 graph.add_node("compose_answer", compose_answer)
- 
+
 graph.add_edge(START, "classify_intent")
 graph.add_conditional_edges(
     "classify_intent",
     route,
-    {"metric": "metric_path", "export": "export_path", "refuse": "refuse_path"},
+    {
+        "metric": "metric_path",
+        "export": "export_path",
+        "narrative": "narrative_path",
+        "refuse": "refuse_path",
+    },
 )
 graph.add_edge("metric_path", "compose_answer")
 graph.add_edge("export_path", "compose_answer")
+graph.add_edge("narrative_path", "compose_answer")
 graph.add_edge("refuse_path", "compose_answer")
 graph.add_edge("compose_answer", END)
  

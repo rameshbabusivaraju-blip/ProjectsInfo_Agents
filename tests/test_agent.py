@@ -14,7 +14,7 @@ import pytest
 from openpyxl import load_workbook
 from sqlmodel import Session, SQLModel, create_engine
 
-from app import agent, excel_export
+from app import agent, excel_export, retrieval
 from app.github_connector import REVIEW_TURNAROUND_SQL, UNREVIEWED_PRS_SQL
 from app.jira_connector import VELOCITY_SQL
 from app.models import PrReview, PullRequest, Sprint, Ticket, TicketSprint
@@ -205,3 +205,58 @@ def test_export_path_writes_last_sprint_to_excel(
     worksheet = workbook.active
     assert worksheet is not None
     assert [cell.value for cell in worksheet[2]] == ["Sprint 2", 8.0]
+
+
+# ---------------------------------------------------------------------------
+# route() — the narrative branch added by AGENTS-39
+# ---------------------------------------------------------------------------
+
+
+def test_route_sends_narrative_to_narrative_path() -> None:
+    """A narrative classification must reach narrative_path, not fall through to metric."""
+    assert agent.route({"metric_key": "narrative"}) == "narrative"
+
+
+# ---------------------------------------------------------------------------
+# narrative_path() — AGENTS-39: retrieval instead of SQL, same rows shape.
+# search() itself is already covered by test_retrieval.py, so it is faked
+# here rather than built against a real FAISS index -- this only has to
+# prove narrative_path's own logic: turning SearchResults into rows, and
+# answering honestly when nothing comes back.
+# ---------------------------------------------------------------------------
+
+
+def test_narrative_path_turns_search_results_into_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retrieved chunks must land in state["rows"] in the same shape metric_path uses."""
+    fake_result = retrieval.SearchResult(
+        score=0.692,
+        text="R2 | ... | Unassigned | Open",
+        doc_id="confluence:10092545",
+        doc_type="raid_log",
+        space_key="ConProK",
+        page_id="10092545",
+        version=1,
+        ticket_ids=[],
+        author_id=None,
+        updated_at="2026-09-25T00:00:00",
+    )
+    monkeypatch.setattr(agent, "search", lambda question, doc_type: [fake_result])
+
+    state = agent.narrative_path({"question": "which risks have no owner", "doc_type": "raid_log"})
+
+    assert state["rows"] == [
+        {"text": fake_result.text, "doc_id": "confluence:10092545", "score": 0.692}
+    ]
+    assert "answer" not in state  # compose_answer still has to run on these rows
+
+
+def test_narrative_path_answers_honestly_when_nothing_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty search results must not reach compose_answer with nothing to summarise."""
+    monkeypatch.setattr(agent, "search", lambda question, doc_type: [])
+
+    state = agent.narrative_path({"question": "anything", "doc_type": "retro"})
+
+    assert state["rows"] == []
+    assert state["answer"] == "No matching content found in the project's retro documents."
