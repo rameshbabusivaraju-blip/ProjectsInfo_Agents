@@ -1,11 +1,11 @@
-"""Tests for the embedding + FAISS storage pipeline — AGENTS-37.
+"""Tests for the embedding + per-type FAISS storage pipeline — AGENTS-37.
 
 embed_texts() is the one seam that needs real network access (it downloads
 BAAI/bge-small-en-v1.5 from Hugging Face Hub on first use), so every test here
 replaces it with a small deterministic fake instead of the real model -- the
 same reasoning test_chunking.py already applies to chunk_all_pages() needing a
 database: the pure logic is tested directly, the one I/O-heavy dependency is
-faked. build_index(), save_index() and load_index() still run against the
+faked. build_indexes(), save_indexes() and load_index() still run against the
 REAL faiss library, so the storage mechanics are genuinely exercised, not
 mocked away.
 """
@@ -63,50 +63,80 @@ def _chunk(**overrides: object) -> Chunk:
     return Chunk(**defaults)  # type: ignore[arg-type]
 
 
-def test_build_index_returns_one_vector_per_chunk() -> None:
-    chunks = [_chunk(text="First chunk."), _chunk(text="Second chunk.")]
-    index, metadata = embeddings.build_index(chunks)
-    assert index.ntotal == 2
-    assert len(metadata) == 2
+def test_build_indexes_groups_by_doc_type() -> None:
+    """Two doc_types in, two separate indexes out -- the whole point of AGENTS-37."""
+    chunks = [
+        _chunk(text="Risk R2 has no owner.", doc_type="raid_log"),
+        _chunk(text="ADR-003 chose FAISS.", doc_type="decision_log"),
+        _chunk(text="Risk R5 needs a mitigation.", doc_type="raid_log"),
+    ]
+    indexes = embeddings.build_indexes(chunks)
+
+    assert set(indexes) == {"raid_log", "decision_log"}
+    assert indexes["raid_log"][0].ntotal == 2
+    assert indexes["decision_log"][0].ntotal == 1
+    assert len(indexes["raid_log"][1]) == 2
+    assert len(indexes["decision_log"][1]) == 1
 
 
-def test_build_index_handles_no_chunks() -> None:
+def test_build_indexes_handles_no_chunks() -> None:
     """An empty Confluence space, or one where every page got skipped -- not an error."""
-    index, metadata = embeddings.build_index([])
-    assert index.ntotal == 0
-    assert metadata == []
+    assert embeddings.build_indexes([]) == {}
 
 
 def test_metadata_carries_every_field_a_future_query_needs() -> None:
-    chunk = _chunk(text="Risk R2 has no owner.", ticket_ids=["AGENTS-37"])
-    _, metadata = embeddings.build_index([chunk])
-    (row,) = metadata
+    chunk = _chunk(text="Risk R2 has no owner.", doc_type="raid_log", ticket_ids=["AGENTS-37"])
+    indexes = embeddings.build_indexes([chunk])
+    (row,) = indexes["raid_log"][1]
     assert row["text"] == "Risk R2 has no owner."
     assert row["doc_id"] == "confluence:1"
     assert row["doc_type"] == "raid_log"
     assert row["ticket_ids"] == ["AGENTS-37"]
 
 
-def test_save_and_load_index_round_trips(tmp_path: Path) -> None:
-    chunks = [_chunk(text="First chunk."), _chunk(text="Second chunk.")]
-    index, metadata = embeddings.build_index(chunks)
-    embeddings.save_index(index, metadata, directory=tmp_path)
+def test_save_and_load_index_round_trips_per_doc_type(tmp_path: Path) -> None:
+    chunks = [
+        _chunk(text="Risk R2 has no owner.", doc_type="raid_log"),
+        _chunk(text="ADR-003 chose FAISS.", doc_type="decision_log"),
+    ]
+    indexes = embeddings.build_indexes(chunks)
+    embeddings.save_indexes(indexes, directory=tmp_path)
 
-    loaded_index, loaded_metadata = embeddings.load_index(directory=tmp_path)
-    assert loaded_index.ntotal == index.ntotal
-    assert loaded_metadata == metadata
+    loaded_index, loaded_metadata = embeddings.load_index("raid_log", directory=tmp_path)
+    assert loaded_index.ntotal == 1
+    assert loaded_metadata == indexes["raid_log"][1]
+
+    # decision_log's index is untouched by loading raid_log's -- genuinely separate files.
+    other_index, other_metadata = embeddings.load_index("decision_log", directory=tmp_path)
+    assert other_index.ntotal == 1
+    assert other_metadata == indexes["decision_log"][1]
 
 
-def test_a_chunk_is_findable_by_its_own_text() -> None:
+def test_available_doc_types_lists_what_was_saved(tmp_path: Path) -> None:
+    chunks = [_chunk(doc_type="raid_log"), _chunk(doc_type="decision_log")]
+    embeddings.save_indexes(embeddings.build_indexes(chunks), directory=tmp_path)
+    assert embeddings.available_doc_types(tmp_path) == ["decision_log", "raid_log"]
+
+
+def test_available_doc_types_empty_when_nothing_built(tmp_path: Path) -> None:
+    """Before the first embedding run -- faiss_index/ doesn't exist yet, not an error."""
+    assert embeddings.available_doc_types(tmp_path / "does_not_exist") == []
+
+
+def test_a_chunk_is_findable_by_its_own_text_within_its_type() -> None:
     """Proves the stored vectors are actually searchable, not just stored.
 
-    Embedding chunk 2's exact text again and searching the index it's part
-    of should return chunk 2 first -- the fake embedder is deterministic per
+    Embedding a chunk's exact text again and searching the index it's part of
+    should return that chunk first -- the fake embedder is deterministic per
     exact text, so this is the same guarantee the real model gives: the same
     text always lands in the same place in vector space.
     """
-    chunks = [_chunk(text="Unrelated first chunk."), _chunk(text="Risk R2 has no owner.")]
-    index, metadata = embeddings.build_index(chunks)
+    chunks = [
+        _chunk(text="Unrelated first chunk.", doc_type="raid_log"),
+        _chunk(text="Risk R2 has no owner.", doc_type="raid_log"),
+    ]
+    indexes = embeddings.build_indexes(chunks)
+    index, metadata = indexes["raid_log"]
 
     query_vector = embeddings.embed_texts(["Risk R2 has no owner."])
     _, result_positions = index.search(query_vector, 1)
