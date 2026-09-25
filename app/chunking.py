@@ -18,7 +18,9 @@ Run it with:  python -m app.chunking
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlmodel import Session, select
@@ -30,41 +32,42 @@ from app.models import ConfluencePage
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
-# Ordered title rules -> doc_type. First match wins. This list does two jobs
-# at once: it says what type a matching page is, AND it is the allow-list for
-# what's in RAG at all -- a title matching nothing here is not indexed under
-# a catch-all type, it is skipped (see _infer_doc_type and chunk_page below).
-# That makes "index 15 of these 20 new Confluence pages" a 15-line edit: add
-# the 15 you want, leave the other 5 alone, no separate exclude-list needed.
-# If the space ever grows past a few dozen pages and per-title lines get
-# tedious, the next lever is a Confluence label (e.g. "rag") fetched by the
-# connector -- not built here, not needed yet at under a dozen pages.
-#
-# Checked against every page actually in the project's Confluence space at
-# the time this was written: the first five rows below account for
-# "01 Project Charter" through "05 PM Notes -- Phase 1"; "retro" and
-# "sprint " cover the two sprint-ceremony pages. Nothing here is the
-# catalogue's original seven-type list verbatim -- real page titles are
-# "Plan of Action" and "PM Notes", not the catalogue's hypothetical ones, so
-# the list follows what is actually there.
-_DOC_TYPE_RULES: list[tuple[str, str]] = [
-    ("project charter", "charter"),
-    ("question catalogue", "question_catalogue"),
-    ("decision log", "decision_log"),
-    ("plan of action", "plan_of_action"),
-    ("pm notes", "pm_notes"),
-    ("retro", "retro"),
-    ("sprint ", "sprint_summary"),
-]
+# Title rules -> doc_type now live in doc_type_rules.json (same folder as this file), not in
+# a Python literal here -- see _load_doc_type_rules() below. First match wins. The rules do
+# two jobs at once: they say what type a matching page is, AND they are the allow-list for
+# what's in RAG at all -- a title matching no row is not indexed under a catch-all type, it
+# is skipped (see _infer_doc_type and chunk_page below). That makes "index 15 of these 20
+# new Confluence pages" a 15-row edit to the JSON file: add the 15 you want, leave the other
+# 5 alone -- no change to this module, nothing to redeploy beyond the JSON file itself.
+# If the space ever grows past a few dozen pages and per-row edits get tedious, the next
+# lever is a Confluence label (e.g. "rag") fetched by the connector -- not built here.
+_DOC_TYPE_RULES_PATH = Path(__file__).parent / "doc_type_rules.json"
+
+
+def _load_doc_type_rules() -> list[tuple[str, str]]:
+    """Read the title -> doc_type allow-list from doc_type_rules.json.
+
+    A JSON file rather than a Python literal, so a rule can be added or removed
+    by editing that file alone -- nothing in this module has to change. Order is
+    preserved from the file (JSON arrays are ordered), which matters because
+    _infer_doc_type() below stops at the first match.
+    """
+    with _DOC_TYPE_RULES_PATH.open(encoding="utf-8") as f:
+        rows = json.load(f)  # [{"match": "...", "doc_type": "..."}, ...], in file order
+    return [(row["match"], row["doc_type"]) for row in rows]
+
+
+_DOC_TYPE_RULES: list[tuple[str, str]] = _load_doc_type_rules()  # read once, at import time
 
 
 def _infer_doc_type(title: str) -> str | None:
     """Classify a page by its title, or say it isn't in scope for RAG at all.
 
-    Returns None for a title matching nothing in _DOC_TYPE_RULES.
+    Returns None for a title matching no row loaded from doc_type_rules.json.
     chunk_page() treats that as "skip this page" — not "index it as
-    unclassified" — so this list is the one place that decides both a page's
-    type and whether it's included. See the comment above _DOC_TYPE_RULES.
+    unclassified" — so those rules are the one place that decides both a
+    page's type and whether it's included. See the comment above
+    _load_doc_type_rules().
     """
     lowered = title.lower()  # case-fold once, e.g. "01 Project Charter" -> "01 project charter"
     for needle, doc_type in _DOC_TYPE_RULES:  # walk rules top to bottom, in order -- first hit wins
@@ -92,10 +95,10 @@ def chunk_page(page: ConfluencePage) -> list[Chunk]:
     """Split one page's body_text into Chunks, each carrying the page's metadata.
 
     Two separate reasons a page produces no chunks, checked in this order:
-    its title isn't in _DOC_TYPE_RULES (not in scope for RAG — see the
-    comment above that list), or it has no body_text yet (fetch failed, or
-    the page is genuinely empty). Neither is an error; both are ordinary,
-    growing states of a live Confluence space.
+    its title matches no row in doc_type_rules.json (not in scope for RAG —
+    see the comment above _load_doc_type_rules()), or it has no body_text
+    yet (fetch failed, or the page is genuinely empty). Neither is an
+    error; both are ordinary, growing states of a live Confluence space.
 
     ticket_ids is computed per chunk, not inherited whole from the page: a
     page can mention AGENTS-14 in its intro and AGENTS-22 three sections
@@ -181,6 +184,6 @@ if __name__ == "__main__":
         print(f"  {doc_type}: {count}")
 
     if skipped:
-        print(f"\n{len(skipped)} page(s) not in _DOC_TYPE_RULES, skipped:")
+        print(f"\n{len(skipped)} page(s) not in doc_type_rules.json, skipped:")
         for title in skipped:
             print(f"  {title!r}")  # !r -> quoted repr, so a blank title is still visible

@@ -31,7 +31,7 @@ def _page(**overrides: object) -> ConfluencePage:
 
 
 # ---------------------------------------------------------------------------
-# _infer_doc_type — title -> doc_type, "other" for anything unrecognized
+# _infer_doc_type — title -> doc_type, or None for a page that's not in scope
 # ---------------------------------------------------------------------------
 
 
@@ -50,10 +50,10 @@ def test_infer_doc_type_prefers_retro_over_sprint() -> None:
     assert _infer_doc_type("Retro — SCRUM Sprint 1") == "retro"
 
 
-def test_infer_doc_type_falls_back_to_other_for_unrecognized_titles() -> None:
-    """A template page or the space's own landing page — not an error, just unclassified."""
-    assert _infer_doc_type("Template - Project plan") == "other"
-    assert _infer_doc_type("ProjectsInfo_Agents") == "other"
+def test_infer_doc_type_returns_none_for_titles_not_on_the_allow_list() -> None:
+    """A template page or the space's own landing page — not indexed, and not an error."""
+    assert _infer_doc_type("Template - Project plan") is None
+    assert _infer_doc_type("ProjectsInfo_Agents") is None
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +66,18 @@ def test_chunk_page_returns_empty_list_for_blank_body() -> None:
     assert chunk_page(_page(body_text=None)) == []
     assert chunk_page(_page(body_text="")) == []
     assert chunk_page(_page(body_text="   \n  ")) == []
+
+
+def test_chunk_page_skips_pages_not_on_the_allow_list() -> None:
+    """A title matching no row in doc_type_rules.json is skipped, even with real body text.
+
+    This is the actual answer to "what happens with 20 new Confluence pages
+    and we only want 15 indexed": the other 5 land here, not under doc_type
+    "other" — see doc_type_rules.json and the comment above
+    _load_doc_type_rules() in chunking.py.
+    """
+    page = _page(title="Some Unrelated Page Nobody Added Yet", body_text="Plenty of real content.")
+    assert chunk_page(page) == []
 
 
 def test_chunk_page_splits_long_text_into_multiple_chunks() -> None:
