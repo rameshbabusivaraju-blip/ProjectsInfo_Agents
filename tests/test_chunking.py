@@ -10,7 +10,14 @@ directly, not worth re-testing through a database.
 
 from datetime import datetime
 
-from app.chunking import CHUNK_OVERLAP, CHUNK_SIZE, Chunk, _infer_doc_type, chunk_page
+from app.chunking import (
+    _DEFAULT_DOC_TYPE,
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    Chunk,
+    _infer_doc_type,
+    chunk_page,
+)
 from app.models import ConfluencePage
 
 
@@ -31,7 +38,7 @@ def _page(**overrides: object) -> ConfluencePage:
 
 
 # ---------------------------------------------------------------------------
-# _infer_doc_type — title -> doc_type, or None for a page that's not in scope
+# _infer_doc_type — title -> doc_type, always something, never None
 # ---------------------------------------------------------------------------
 
 
@@ -45,15 +52,25 @@ def test_infer_doc_type_matches_every_known_project_page() -> None:
     assert _infer_doc_type("Sprint 2") == "sprint_summary"
 
 
+def test_infer_doc_type_matches_newly_added_raid_log_rule() -> None:
+    """Added to doc_type_rules.json without touching chunking.py -- the scenario
+    this JSON file exists for: a new Confluence page type given its own specific
+    label by editing the JSON file alone (see the comment over _DEFAULT_DOC_TYPE).
+    """
+    assert _infer_doc_type("RAID Log — ProjectPulse") == "raid_log"
+
+
 def test_infer_doc_type_prefers_retro_over_sprint() -> None:
     """A retro page's title also contains the word 'Sprint' — retro must win, not sprint_summary."""
     assert _infer_doc_type("Retro — SCRUM Sprint 1") == "retro"
 
 
-def test_infer_doc_type_returns_none_for_titles_not_on_the_allow_list() -> None:
-    """A template page or the space's own landing page — not indexed, and not an error."""
-    assert _infer_doc_type("Template - Project plan") is None
-    assert _infer_doc_type("ProjectsInfo_Agents") is None
+def test_infer_doc_type_falls_back_to_general_for_an_unmatched_title() -> None:
+    """A template page, the space's own landing page, or anything not yet given its
+    own rule -- still classified, still indexed, just under _DEFAULT_DOC_TYPE.
+    """
+    assert _infer_doc_type("Template - Project plan") == _DEFAULT_DOC_TYPE
+    assert _infer_doc_type("ProjectsInfo_Agents") == _DEFAULT_DOC_TYPE
 
 
 # ---------------------------------------------------------------------------
@@ -68,16 +85,16 @@ def test_chunk_page_returns_empty_list_for_blank_body() -> None:
     assert chunk_page(_page(body_text="   \n  ")) == []
 
 
-def test_chunk_page_skips_pages_not_on_the_allow_list() -> None:
-    """A title matching no row in doc_type_rules.json is skipped, even with real body text.
-
-    This is the actual answer to "what happens with 20 new Confluence pages
-    and we only want 15 indexed": the other 5 land here, not under doc_type
-    "other" — see doc_type_rules.json and the comment above
-    _load_doc_type_rules() in chunking.py.
+def test_chunk_page_still_chunks_a_page_with_no_matching_rule() -> None:
+    """A title matching no row in doc_type_rules.json is still indexed -- every
+    page added to Confluence must be searchable automatically, with no code
+    change required. It just gets _DEFAULT_DOC_TYPE instead of a specific type.
+    See the comment above _DEFAULT_DOC_TYPE in chunking.py.
     """
     page = _page(title="Some Unrelated Page Nobody Added Yet", body_text="Plenty of real content.")
-    assert chunk_page(page) == []
+    (chunk,) = chunk_page(page)
+    assert chunk.doc_type == _DEFAULT_DOC_TYPE
+    assert chunk.text == "Plenty of real content."
 
 
 def test_chunk_page_splits_long_text_into_multiple_chunks() -> None:

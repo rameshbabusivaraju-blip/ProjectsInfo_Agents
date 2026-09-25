@@ -13,6 +13,13 @@ alternative, one chunk per heading section, was not built: ProjectPulse's
 own pages are short enough that heading-aware splitting would rarely change
 the result, and fixed-size chunking is the simpler mechanism for it.
 
+Inclusion policy: every page in the Confluence space is chunked and indexed,
+with no code change required when a new page is added. doc_type_rules.json
+only refines which specific type a page is tagged with for filtering
+(AGENTS-38) -- it is not a gate on whether a page is searchable at all. See
+_DEFAULT_DOC_TYPE below for the one case that changed this from an earlier
+version of this file, where an unmatched title was excluded outright.
+
 Run it with:  python -m app.chunking
 """
 
@@ -32,16 +39,22 @@ from app.models import ConfluencePage
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
-# Title rules -> doc_type now live in doc_type_rules.json (same folder as this file), not in
-# a Python literal here -- see _load_doc_type_rules() below. First match wins. The rules do
-# two jobs at once: they say what type a matching page is, AND they are the allow-list for
-# what's in RAG at all -- a title matching no row is not indexed under a catch-all type, it
-# is skipped (see _infer_doc_type and chunk_page below). That makes "index 15 of these 20
-# new Confluence pages" a 15-row edit to the JSON file: add the 15 you want, leave the other
-# 5 alone -- no change to this module, nothing to redeploy beyond the JSON file itself.
-# If the space ever grows past a few dozen pages and per-row edits get tedious, the next
-# lever is a Confluence label (e.g. "rag") fetched by the connector -- not built here.
+# Title rules -> doc_type live in doc_type_rules.json (same folder as this file), not in a
+# Python literal here -- see _load_doc_type_rules() below. First match wins. These rules
+# only refine WHICH type a page gets; they do not gate whether it's indexed at all -- every
+# page in the space is indexed regardless (see _DEFAULT_DOC_TYPE just below). Giving a new
+# kind of page its own specific type is still a JSON-only edit: add one row, no change to
+# this module. If the space grows large enough that per-row rules get tedious even as a
+# nice-to-have, the next lever is a Confluence label (e.g. "rag-type: xyz") fetched by the
+# connector -- not built here.
 _DOC_TYPE_RULES_PATH = Path(__file__).parent / "doc_type_rules.json"
+
+# What a page gets when no row above matches its title. Not an error and not "excluded" --
+# every page added to Confluence must end up searchable with no code change required, so
+# there is no longer an "out of scope for RAG" outcome, only "no specific label for this one
+# yet." A specific doc_type is a bonus for AGENTS-38's filtering, never a precondition for
+# being in RAG.
+_DEFAULT_DOC_TYPE = "general"
 
 
 def _load_doc_type_rules() -> list[tuple[str, str]]:
@@ -60,20 +73,20 @@ def _load_doc_type_rules() -> list[tuple[str, str]]:
 _DOC_TYPE_RULES: list[tuple[str, str]] = _load_doc_type_rules()  # read once, at import time
 
 
-def _infer_doc_type(title: str) -> str | None:
-    """Classify a page by its title, or say it isn't in scope for RAG at all.
+def _infer_doc_type(title: str) -> str:
+    """Classify a page by its title. Always returns something -- never None.
 
-    Returns None for a title matching no row loaded from doc_type_rules.json.
-    chunk_page() treats that as "skip this page" — not "index it as
-    unclassified" — so those rules are the one place that decides both a
-    page's type and whether it's included. See the comment above
-    _load_doc_type_rules().
+    Tries every row loaded from doc_type_rules.json in order and returns the
+    first match. A title matching nothing gets _DEFAULT_DOC_TYPE rather than
+    being treated as out of scope: there is no "exclude this page" outcome
+    any more, only "no specific label for it yet." See the comment above
+    _DEFAULT_DOC_TYPE.
     """
     lowered = title.lower()  # case-fold once, e.g. "01 Project Charter" -> "01 project charter"
     for needle, doc_type in _DOC_TYPE_RULES:  # walk rules top to bottom, in order -- first hit wins
         if needle in lowered:  # substring test, e.g. "project charter" in "01 project charter"
-            return doc_type  # matched -> this is the page's type, and it's in scope for RAG
-    return None  # matched nothing -> not on the allow-list, caller must skip this page
+            return doc_type  # matched -> this page's specific type
+    return _DEFAULT_DOC_TYPE  # matched nothing -> still indexed, just without a specific label
 
 
 @dataclass(frozen=True)
@@ -94,11 +107,12 @@ class Chunk:
 def chunk_page(page: ConfluencePage) -> list[Chunk]:
     """Split one page's body_text into Chunks, each carrying the page's metadata.
 
-    Two separate reasons a page produces no chunks, checked in this order:
-    its title matches no row in doc_type_rules.json (not in scope for RAG —
-    see the comment above _load_doc_type_rules()), or it has no body_text
-    yet (fetch failed, or the page is genuinely empty). Neither is an
-    error; both are ordinary, growing states of a live Confluence space.
+    Every page with real text is chunked and indexed -- the only reason a
+    page produces no chunks is an empty body (fetch failed, or the page is
+    genuinely empty so far), which is an ordinary, growing state of a live
+    Confluence space, not an error. A page whose title matches no row in
+    doc_type_rules.json is still fully indexed, just under _DEFAULT_DOC_TYPE
+    instead of a specific type.
 
     ticket_ids is computed per chunk, not inherited whole from the page: a
     page can mention AGENTS-14 in its intro and AGENTS-22 three sections
@@ -106,12 +120,10 @@ def chunk_page(page: ConfluencePage) -> list[Chunk]:
     ticket-scoped filtering wrong for the chunks that aren't actually about
     either one.
     """
-    # Gate 1 -- is this page's title on the allow-list at all? None means "out of scope", bail now.
-    doc_type = _infer_doc_type(page.title)
-    if doc_type is None:
-        return []
+    doc_type = _infer_doc_type(page.title)  # always succeeds -- see _infer_doc_type
 
-    # Gate 2 -- does the page actually have text? Covers None, "" and whitespace-only bodies.
+    # The one remaining gate: does the page actually have text? Covers None, "" and
+    # whitespace-only bodies -- there is nothing to embed either way.
     if not page.body_text or not page.body_text.strip():
         return []
 
@@ -167,12 +179,14 @@ def chunk_all_pages() -> list[Chunk]:
 # Manual smoke-test entry point: `python -m app.chunking` prints a summary against whatever
 # is currently in the DB. Not part of the pipeline itself, and not exercised by the tests.
 if __name__ == "__main__":
-    all_pages = _all_pages()  # every stored page, in or out of scope for RAG
-    # Only pages whose title matched a _DOC_TYPE_RULES entry contribute chunks here.
+    all_pages = _all_pages()  # every stored page -- all of them get chunked below
     result = [chunk for page in all_pages for chunk in chunk_page(page)]
-    skipped = [
-        page.title for page in all_pages if _infer_doc_type(page.title) is None
-    ]  # titles chunk_page() skipped
+    empty = [
+        page.title for page in all_pages if not page.body_text or not page.body_text.strip()
+    ]  # the only pages chunk_page() actually skips
+    unlabeled = [
+        page.title for page in all_pages if _infer_doc_type(page.title) == _DEFAULT_DOC_TYPE
+    ]  # indexed fine, but no row in doc_type_rules.json matched -- candidates for one
 
     by_type: dict[str, int] = {}
     for c in result:
@@ -183,7 +197,12 @@ if __name__ == "__main__":
     for doc_type, count in sorted(by_type.items()):
         print(f"  {doc_type}: {count}")
 
-    if skipped:
-        print(f"\n{len(skipped)} page(s) not in doc_type_rules.json, skipped:")
-        for title in skipped:
+    if empty:
+        print(f"\n{len(empty)} page(s) with no body text, skipped:")
+        for title in empty:
             print(f"  {title!r}")  # !r -> quoted repr, so a blank title is still visible
+
+    if unlabeled:
+        print(f"\n{len(unlabeled)} page(s) indexed under '{_DEFAULT_DOC_TYPE}' (no rule matched):")
+        for title in unlabeled:
+            print(f"  {title!r}")
