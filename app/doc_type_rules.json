@@ -5,5 +5,6 @@
   {"match": "plan of action", "doc_type": "plan_of_action"},
   {"match": "pm notes", "doc_type": "pm_notes"},
   {"match": "retro", "doc_type": "retro"},
-  {"match": "sprint ", "doc_type": "sprint_summary"}
+  {"match": "sprint ", "doc_type": "sprint_summary"},
+  {"match": "raid log", "doc_type": "raid_log"}
 ]
