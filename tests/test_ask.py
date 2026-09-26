@@ -7,7 +7,7 @@ it accepts a question, calls the agent, and shapes the result into
 AskResponse -- not that the agent itself answers correctly, which is what
 test_agent.py and the golden set already cover.
 """
-
+from app.agent import agent
 from __future__ import annotations
 
 import pytest
