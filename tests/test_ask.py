@@ -7,19 +7,25 @@ it accepts a question, calls the agent, and shapes the result into
 AskResponse -- not that the agent itself answers correctly, which is what
 test_agent.py and the golden set already cover.
 """
-from app.agent import agent
+
 from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app import main
+from app.agent import agent
 
 client = TestClient(main.app)
 
 
 def test_ask_returns_the_agents_answer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /ask must call agent.invoke() and return its answer and metric_key."""
+    """POST /ask must call agent.invoke() and return its answer and metric_key.
+
+    Patches the object imported directly from app.agent (its defining module)
+    rather than main.agent -- main.py imports the same object, but reaching it
+    through main's re-export trips mypy strict's no-implicit-reexport check.
+    """
     fake_result = {
         "question": "which risks have no owner",
         "metric_key": "narrative",
@@ -27,7 +33,7 @@ def test_ask_returns_the_agents_answer(monkeypatch: pytest.MonkeyPatch) -> None:
         "rows": [{"text": "R2 has no owner.", "doc_id": "confluence:1", "score": 0.9}],
         "answer": "R2 has no owner.",
     }
-    monkeypatch.setattr(main.agent, "invoke", lambda state: fake_result)
+    monkeypatch.setattr(agent, "invoke", lambda state: fake_result)
 
     response = client.post("/ask", json={"question": "which risks have no owner"})
 
