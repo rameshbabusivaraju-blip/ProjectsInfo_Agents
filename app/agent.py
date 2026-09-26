@@ -12,6 +12,11 @@ ADR-010).
 AGENTS-39 adds the fourth path: narrative questions, answered by AGENTS-38's
 filtered retrieval over the Confluence documents rather than SQL. Only a
 genuine "other" now falls through to refuse_path.
+
+AGENTS-41 adds the fifth path: hybrid questions, which need a database number
+and a document search in the same answer. hybrid_path runs metric_path and
+narrative_path exactly as they already are and merges their rows -- no new
+SQL or retrieval code, just combining what the other two paths already do.
 """
 
 import sqlite3
@@ -38,30 +43,39 @@ class AgentState(TypedDict, total=False):
     question: str
     metric_key: str
     doc_type: str
+    hybrid_metric_key: str
     rows: list[dict[str, Any]]
     answer: str
 
 class Classification(BaseModel):
     """Structured output for classify_intent.
 
-    One known query, a narrative lookup, one action to take, or 'other'.
+    One known query, a narrative lookup, a hybrid of both, one action to
+    take, or 'other'.
     """
 
     metric_key: Literal[
-        "velocity", "review_turnaround", "unreviewed_prs", "export_excel", "narrative", "other"
+        "velocity", "review_turnaround", "unreviewed_prs", "export_excel",
+        "narrative", "hybrid", "other",
     ] = Field(
         description="Which known query answers the question, 'narrative' if it is answered by "
-        "searching the project's own documents rather than a database query, 'export_excel' to "
-        "write the last sprint's velocity to a file, or 'other' if none fits"
+        "searching the project's own documents rather than a database query, 'hybrid' if it "
+        "needs both a database number and a document search in the same answer, 'export_excel' "
+        "to write the last sprint's velocity to a file, or 'other' if none fits"
     )
     doc_type: Literal[
         "charter", "decision_log", "general", "plan_of_action", "pm_notes",
         "question_catalogue", "raid_log", "retro", "sprint_summary",
     ] | None = Field(
         default=None,
-        description="Which document type to search. Only set when metric_key is 'narrative'. "
-        "Matches AGENTS-37's per-doc-type FAISS indexes, hand-maintained same as "
+        description="Which document type to search. Set when metric_key is 'narrative' or "
+        "'hybrid'. Matches AGENTS-37's per-doc-type FAISS indexes, hand-maintained same as "
         "doc_type_rules.json (RAID log A2: the document set stays small enough for that).",
+    )
+    hybrid_metric_key: Literal["velocity", "review_turnaround", "unreviewed_prs"] | None = Field(
+        default=None,
+        description="Which metric query supplies the number half of a hybrid answer. Only set "
+        "when metric_key is 'hybrid'.",
     )
 
 _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
@@ -74,7 +88,10 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "narrative = answered by searching the project's own documents, not a database query -- "
      "when you pick this, also set doc_type to whichever of charter, decision_log, general, "
      "plan_of_action, pm_notes, question_catalogue, raid_log, retro, sprint_summary the "
-     "question is actually about"),
+     "question is actually about\n"
+     "hybrid = needs both a database number and a document search in the same answer -- when "
+     "you pick this, set doc_type as above AND hybrid_metric_key to whichever of velocity, "
+     "review_turnaround, unreviewed_prs supplies the number"),
     ("human", "{question}"),
 ])
 
@@ -86,17 +103,21 @@ def classify_intent(state: AgentState) -> AgentState:
     state["metric_key"] = result.metric_key
     if result.doc_type:
         state["doc_type"] = result.doc_type
+    if result.hybrid_metric_key:
+        state["hybrid_metric_key"] = result.hybrid_metric_key
     return state
 
 
 def route(state: AgentState) -> str:
-    """Conditional edge: routes export, narrative and refusal cases to their own paths."""
+    """Conditional edge: routes export, narrative, hybrid and refusal cases to their own paths."""
     if state["metric_key"] == "other":
         return "refuse"
     if state["metric_key"] == "export_excel":
         return "export"
     if state["metric_key"] == "narrative":
         return "narrative"
+    if state["metric_key"] == "hybrid":
+        return "hybrid"
     return "metric"
  
  
@@ -159,14 +180,30 @@ def narrative_path(state: AgentState) -> AgentState:
     return state
 
 
+def hybrid_path(state: AgentState) -> AgentState:
+    """Run the SQL metric and the document search, and merge their rows (AGENTS-41).
+
+    Reuses metric_path and narrative_path exactly as they already are -- this
+    node's only job is to call both and combine what they put in
+    state["rows"], so compose_answer (which already just reads state["rows"])
+    needs no change to summarise a hybrid answer instead of a single-source one.
+    """
+    question, doc_type = state["question"], state["doc_type"]
+    metric_rows = metric_path({"metric_key": state["hybrid_metric_key"]})["rows"]
+    narrative_rows = narrative_path({"question": question, "doc_type": doc_type})["rows"]
+    state["rows"] = metric_rows + narrative_rows
+    return state
+
+
 def refuse_path(state: AgentState) -> AgentState:
     """Answer honestly when the question matches none of the known paths."""
     state["rows"] = []
     state["answer"] = (
         "I can answer sprint velocity, PR review turnaround, PRs merged "
-        "without review, export the last sprint's velocity to Excel, or "
-        "questions answered by the project's own documents. This question "
-        "doesn't match any of those."
+        "without review, export the last sprint's velocity to Excel, "
+        "questions answered by the project's own documents, or questions "
+        "that combine a number with the project's own documents. This "
+        "question doesn't match any of those."
     )
     return state
  
@@ -193,6 +230,7 @@ graph.add_node("classify_intent", classify_intent)
 graph.add_node("metric_path", metric_path)
 graph.add_node("export_path", export_path)
 graph.add_node("narrative_path", narrative_path)
+graph.add_node("hybrid_path", hybrid_path)
 graph.add_node("refuse_path", refuse_path)
 graph.add_node("compose_answer", compose_answer)
 
@@ -204,12 +242,14 @@ graph.add_conditional_edges(
         "metric": "metric_path",
         "export": "export_path",
         "narrative": "narrative_path",
+        "hybrid": "hybrid_path",
         "refuse": "refuse_path",
     },
 )
 graph.add_edge("metric_path", "compose_answer")
 graph.add_edge("export_path", "compose_answer")
 graph.add_edge("narrative_path", "compose_answer")
+graph.add_edge("hybrid_path", "compose_answer")
 graph.add_edge("refuse_path", "compose_answer")
 graph.add_edge("compose_answer", END)
  
