@@ -15,10 +15,10 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from sqlalchemy import text
-from sqlmodel import Session, SQLModel
+from sqlalchemy import delete, text
+from sqlmodel import Session
 
-from app.db import engine
+from app.db import engine, init_db
 from app.models import Person, Sprint, Ticket, TicketSprint, WorkLog
 
 # Read .env into the process environment. Secrets never live in this file.
@@ -155,18 +155,19 @@ def fetch_worklogs(issue_key: str) -> list[dict[str, Any]]:
 
 
 def load() -> None:
-    """Rebuild the local database from what Jira currently says.
+    """Refresh the four Jira tables from what Jira currently says.
 
-    The database is a mirror of Jira, not a second source of truth, so it is
-    dropped and recreated rather than updated in place. Working out what changed
-    would be more code and more bugs for no benefit at this size.
+    The Jira tables are a mirror of Jira, not a second source of truth, so they
+    are cleared and refilled rather than updated in place. Only these four are
+    cleared, so GitHub and Confluence data in the same database are untouched,
+    the same convention as github_connector.load().
     """
     # Fetch everything first. If a call fails, the existing database is untouched.
     sprints = fetch_sprints()
     issues = fetch_issues()
 
-    SQLModel.metadata.drop_all(engine)
-    SQLModel.metadata.create_all(engine)
+    # Creates any missing tables; never drops or alters existing ones.
+    init_db()
 
     # People appear on issues and on work logs. Collect them once, write them once.
     people: dict[str, Person] = {}
@@ -184,6 +185,11 @@ def load() -> None:
         return account_id
 
     with Session(engine) as session:
+        # Clear Jira rows only, children before parents because of the foreign keys.
+        session.exec(delete(WorkLog))
+        session.exec(delete(TicketSprint))
+        session.exec(delete(Ticket))
+        session.exec(delete(Sprint))
         # --- Sprints -------------------------------------------------------
         for sprint in sprints:
             session.add(
@@ -259,8 +265,11 @@ def load() -> None:
                 )
 
         # --- People and work logs ------------------------------------------
+        # People are shared with Confluence authors, and the table is no longer
+        # dropped, so merge (insert or update) instead of add. Add would fail on
+        # an account id that already exists.
         for person in people.values():
-            session.add(person)
+            session.merge(person)
         for work_log in work_logs:
             session.add(work_log)
 
