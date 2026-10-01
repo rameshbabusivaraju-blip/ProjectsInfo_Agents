@@ -260,3 +260,13 @@ def test_narrative_path_answers_honestly_when_nothing_matches(
 
     assert state["rows"] == []
     assert state["answer"] == "No matching content found in the project's retro documents."
+
+def test_compose_prompt_tells_model_to_admit_missing_data() -> None:
+    """The compose prompt must forbid guessing when the rows do not answer the question."""
+    messages = agent._COMPOSE_PROMPT.format_messages(question="Who won the cup?", rows=[])
+    system_text = str(messages[0].content)
+
+    assert "does not answer the question, say so plainly" in system_text
+    assert "Never use general knowledge or guess" in system_text
+    # The original rule about invented numbers must still be there.
+    assert "Do not add any number that is not in the data" in system_text

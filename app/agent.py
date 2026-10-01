@@ -211,7 +211,9 @@ def refuse_path(state: AgentState) -> AgentState:
 _COMPOSE_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
      "Answer the question in one short sentence using only the data given. "
-     "Do not add any number that is not in the data."),
+     "Do not add any number that is not in the data. "
+     "If the data does not answer the question, say so plainly. "
+     "Never use general knowledge or guess."),
     ("human", "Question: {question}\nData: {rows}"),
 ])
  
