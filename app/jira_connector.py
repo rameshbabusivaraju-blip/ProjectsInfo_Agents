@@ -300,6 +300,30 @@ GROUP BY s.id
 ORDER BY s.start_date
 """
 
+# Committed vs delivered per sprint — catalogue question A2.
+#
+# Jira does not keep the sprint's starting scope in this mirror, so "committed"
+# is approximated: points of tickets that were in the sprint and already existed
+# when it started (created on or before start_date). A ticket carried over from
+# an earlier sprint counts as committed again in the sprint it moved to.
+# "Delivered" uses the same rule as VELOCITY_SQL: a done ticket counts only in
+# the last sprint it was in. Sprints with nothing delivered still get a row.
+COMMITTED_VS_DELIVERED_SQL = """
+SELECT s.name AS sprint,
+       COALESCE(SUM(CASE WHEN t.created <= s.start_date THEN t.story_points END), 0)
+           AS committed,
+       COALESCE(SUM(CASE
+           WHEN t.status_category = 'done'
+            AND ts.position = (
+                SELECT MAX(position) FROM ticket_sprints WHERE ticket_key = t.key
+            )
+           THEN t.story_points END), 0) AS delivered
+FROM sprints s
+JOIN ticket_sprints ts ON ts.sprint_id = s.id
+JOIN tickets t ON t.key = ts.ticket_key
+GROUP BY s.id
+ORDER BY s.start_date
+"""
 
 def velocity() -> None:
     """Print points delivered per sprint — catalogue question A1."""
