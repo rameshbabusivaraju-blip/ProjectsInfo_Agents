@@ -20,7 +20,7 @@ from app.github_connector import (
     REVIEW_TURNAROUND_SQL,
     UNREVIEWED_PRS_SQL,
 )
-from app.jira_connector import VELOCITY_SQL
+from app.jira_connector import COMMITTED_VS_DELIVERED_SQL, VELOCITY_SQL
 from app.models import PrReview, PullRequest, Sprint, Ticket, TicketSprint
 
 # ---------------------------------------------------------------------------
@@ -32,6 +32,9 @@ def test_query_map_velocity_uses_velocity_sql() -> None:
     """velocity must run jira_connector's own VELOCITY_SQL, not a copy of it."""
     assert agent._QUERY_MAP["velocity"] is VELOCITY_SQL
 
+def test_query_map_committed_vs_delivered_uses_committed_vs_delivered_sql() -> None:
+    """committed_vs_delivered must run jira_connector's own COMMITTED_VS_DELIVERED_SQL."""
+    assert agent._QUERY_MAP["committed_vs_delivered"] is COMMITTED_VS_DELIVERED_SQL
 
 def test_query_map_review_turnaround_uses_review_turnaround_sql() -> None:
     """review_turnaround must run github_connector's own REVIEW_TURNAROUND_SQL."""
@@ -85,6 +88,49 @@ def test_metric_path_runs_velocity_sql(
 
     assert state["rows"] == [{"sprint": "Sprint 1", "delivered": 5.0}]
 
+def test_metric_path_runs_committed_vs_delivered_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Committed counts tickets that existed at sprint start; delivered follows velocity."""
+    db_path = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+
+    def ticket(key: str, points: float, created: datetime, category: str) -> Ticket:
+        return Ticket(
+            key=key,
+            summary=key,
+            issue_type="Task",
+            hierarchy_level=0,
+            status="Done" if category == "done" else "To Do",
+            status_category=category,
+            story_points=points,
+            created=created,
+            updated=created,
+        )
+
+    with Session(engine) as session:
+        session.add(Sprint(id=1, name="Sprint 1", state="closed", start_date=datetime(2026, 1, 10)))
+        session.add(Sprint(id=2, name="Sprint 2", state="active", start_date=datetime(2026, 1, 20)))
+        # A: existed at start, done in Sprint 1.   B: added mid-sprint, done in Sprint 1.
+        # C: existed at start, not done, so it carries over from Sprint 1 into Sprint 2.
+        session.add(ticket("AGENTS-1", 5.0, datetime(2026, 1, 1), "done"))
+        session.add(ticket("AGENTS-2", 3.0, datetime(2026, 1, 12), "done"))
+        session.add(ticket("AGENTS-3", 2.0, datetime(2026, 1, 1), "new"))
+        session.add(TicketSprint(ticket_key="AGENTS-1", sprint_id=1, position=0))
+        session.add(TicketSprint(ticket_key="AGENTS-2", sprint_id=1, position=0))
+        session.add(TicketSprint(ticket_key="AGENTS-3", sprint_id=1, position=0))
+        session.add(TicketSprint(ticket_key="AGENTS-3", sprint_id=2, position=1))
+        session.commit()
+
+    monkeypatch.setattr(agent, "DB_PATH", str(db_path))
+
+    state = agent.metric_path({"metric_key": "committed_vs_delivered"})
+
+    assert state["rows"] == [
+        {"sprint": "Sprint 1", "committed": 7.0, "delivered": 8.0},
+        {"sprint": "Sprint 2", "committed": 2.0, "delivered": 0.0},
+    ]
 
 def test_metric_path_runs_review_turnaround_sql(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
