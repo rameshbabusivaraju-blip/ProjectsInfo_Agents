@@ -37,6 +37,7 @@ from app.github_connector import (
 from app.jira_connector import (
     COMMITTED_VS_DELIVERED_SQL,
     LOGGED_VS_PLANNED_HOURS_SQL,
+    RE_ESTIMATED_STORIES_SQL,
     VELOCITY_SQL,
 )
 from app.llm.provider import get_llm
@@ -63,8 +64,9 @@ class Classification(BaseModel):
     """
 
     metric_key: Literal[
-        "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "review_turnaround",
-        "longest_review_wait", "unreviewed_prs", "export_excel", "narrative", "hybrid", "other",
+        "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
+        "review_turnaround", "longest_review_wait", "unreviewed_prs", "export_excel",
+        "narrative", "hybrid", "other",
     ] = Field(
         description="Which known query answers the question, 'narrative' if it is answered by "
         "searching the project's own documents rather than a database query, 'hybrid' if it "
@@ -92,6 +94,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "velocity = sprint velocity, points completed per sprint\n"
      "committed_vs_delivered = story points committed versus delivered per sprint\n"
      "logged_vs_planned_hours = hours logged versus planned (estimated) hours per sprint\n"
+     "re_estimated_stories = stories whose story points were changed after the sprint started\n"
      "review_turnaround = average pull request review turnaround time\n"
      "longest_review_wait = the single longest time a pull request waited for its first review\n"
      "unreviewed_prs = pull requests merged without a review\n"
@@ -136,6 +139,7 @@ _QUERY_MAP = {
     "velocity": VELOCITY_SQL,
     "committed_vs_delivered": COMMITTED_VS_DELIVERED_SQL,
     "logged_vs_planned_hours": LOGGED_VS_PLANNED_HOURS_SQL,
+    "re_estimated_stories": RE_ESTIMATED_STORIES_SQL,
     "review_turnaround": REVIEW_TURNAROUND_SQL,
     "longest_review_wait": LONGEST_REVIEW_WAIT_SQL,
     "unreviewed_prs": UNREVIEWED_PRS_SQL,
@@ -227,6 +231,8 @@ _COMPOSE_PROMPT = ChatPromptTemplate.from_messages([
      "Answer the question in one short sentence using only the data given. "
      "Do not add any number that is not in the data. "
      "If the data does not answer the question, say so plainly. "
+     "If the data is an empty list, say that no matching records were found. "
+     "If the data is an empty list, say that no matching records were found. "
      "Never use general knowledge or guess."),
     ("human", "Question: {question}\nData: {rows}"),
 ])

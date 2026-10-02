@@ -69,6 +69,21 @@ class WorkLog(SQLModel, table=True):
     seconds: int
     comment: str | None = None
 
+class EstimateChange(SQLModel, table=True):
+    """One change to a ticket's story points, from Jira's change history.
+
+    from_points is None when the points were set for the first time. That is an
+    estimate, not a re-estimate, so the re-estimate query skips those rows.
+    """
+
+    __tablename__ = "estimate_changes"
+
+    id: str = Field(primary_key=True)
+    ticket_key: str = Field(foreign_key="tickets.key")
+    changed_at: datetime
+    from_points: float | None = None
+    to_points: float | None = None
+
 class Commit(SQLModel, table=True):
     """One commit on the default branch."""
 

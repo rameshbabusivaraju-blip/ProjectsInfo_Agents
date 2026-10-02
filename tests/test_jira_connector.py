@@ -15,7 +15,7 @@ from sqlalchemy import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import jira_connector
-from app.models import Commit, ConfluencePage, Person, Sprint, Ticket, WorkLog
+from app.models import Commit, ConfluencePage, EstimateChange, Person, Sprint, Ticket, WorkLog
 
 _USER = {"accountId": "acc-1", "displayName": "Ramesh"}
 
@@ -79,6 +79,7 @@ def engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Engine:
             }
         ],
     )
+    monkeypatch.setattr(jira_connector, "fetch_changelog", lambda key: [])
     return test_engine
 
 
@@ -104,3 +105,38 @@ def test_load_replaces_jira_rows_and_updates_people(engine: Engine) -> None:
         person = session.get(Person, "acc-1")
         assert person is not None
         assert person.display_name == "Ramesh"
+
+def test_load_keeps_only_story_point_changes(
+    engine: Engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only story point changes are stored, and a first estimate has no previous value."""
+    entry_first = {
+        "id": "h1",
+        "created": "2026-09-09T20:36:15.740+0530",
+        "items": [
+            {"field": "Story point estimate", "fieldId": "customfield_10016", "toString": "5"}
+        ],
+    }
+    entry_change = {
+        "id": "h2",
+        "created": "2026-09-12T10:00:00.000+0530",
+        "items": [
+            {"field": "status", "fieldId": "status", "fromString": "To Do", "toString": "Done"},
+            {
+                "field": "Story point estimate",
+                "fieldId": "customfield_10016",
+                "fromString": "5.0",
+                "toString": "8.0",
+            },
+        ],
+    }
+    monkeypatch.setattr(jira_connector, "fetch_changelog", lambda key: [entry_first, entry_change])
+
+    jira_connector.load()
+
+    with Session(engine) as session:
+        changes = session.exec(select(EstimateChange).order_by(EstimateChange.id)).all()
+        assert [(c.id, c.from_points, c.to_points) for c in changes] == [
+            ("h1", None, 5.0),
+            ("h2", 5.0, 8.0),
+        ]

@@ -18,6 +18,7 @@ def test_schema_creates_expected_tables() -> None:
         "tickets",
         "ticket_sprints",
         "work_logs",
+        "estimate_changes",
         "commits",
         "pull_requests",
         "pr_reviews",
