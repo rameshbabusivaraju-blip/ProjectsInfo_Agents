@@ -29,7 +29,11 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
  
 from app.excel_export import export_to_excel
-from app.github_connector import REVIEW_TURNAROUND_SQL, UNREVIEWED_PRS_SQL
+from app.github_connector import (
+    LONGEST_REVIEW_WAIT_SQL,
+    REVIEW_TURNAROUND_SQL,
+    UNREVIEWED_PRS_SQL,
+)
 from app.jira_connector import VELOCITY_SQL
 from app.llm.provider import get_llm
 from app.retrieval import search
@@ -55,8 +59,8 @@ class Classification(BaseModel):
     """
 
     metric_key: Literal[
-        "velocity", "review_turnaround", "unreviewed_prs", "export_excel",
-        "narrative", "hybrid", "other",
+        "velocity", "review_turnaround", "longest_review_wait", "unreviewed_prs",
+        "export_excel", "narrative", "hybrid", "other",
     ] = Field(
         description="Which known query answers the question, 'narrative' if it is answered by "
         "searching the project's own documents rather than a database query, 'hybrid' if it "
@@ -83,6 +87,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "Classify the question into exactly one known query or action, or 'other' if none fits.\n"
      "velocity = sprint velocity, points completed per sprint\n"
      "review_turnaround = average pull request review turnaround time\n"
+     "longest_review_wait = the single longest time a pull request waited for its first review\n"
      "unreviewed_prs = pull requests merged without a review\n"
      "export_excel = write the last sprint's velocity to an Excel file\n"
      "narrative = answered by searching the project's own documents, not a database query -- "
@@ -124,6 +129,7 @@ def route(state: AgentState) -> str:
 _QUERY_MAP = {
     "velocity": VELOCITY_SQL,
     "review_turnaround": REVIEW_TURNAROUND_SQL,
+    "longest_review_wait": LONGEST_REVIEW_WAIT_SQL,
     "unreviewed_prs": UNREVIEWED_PRS_SQL,
 }
  

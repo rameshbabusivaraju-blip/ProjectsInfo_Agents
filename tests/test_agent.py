@@ -15,7 +15,11 @@ from openpyxl import load_workbook
 from sqlmodel import Session, SQLModel, create_engine
 
 from app import agent, excel_export, retrieval
-from app.github_connector import REVIEW_TURNAROUND_SQL, UNREVIEWED_PRS_SQL
+from app.github_connector import (
+    LONGEST_REVIEW_WAIT_SQL,
+    REVIEW_TURNAROUND_SQL,
+    UNREVIEWED_PRS_SQL,
+)
 from app.jira_connector import VELOCITY_SQL
 from app.models import PrReview, PullRequest, Sprint, Ticket, TicketSprint
 
@@ -38,6 +42,9 @@ def test_query_map_unreviewed_prs_uses_unreviewed_prs_sql() -> None:
     """unreviewed_prs must run github_connector's own UNREVIEWED_PRS_SQL."""
     assert agent._QUERY_MAP["unreviewed_prs"] is UNREVIEWED_PRS_SQL
 
+def test_query_map_longest_review_wait_uses_longest_review_wait_sql() -> None:
+    """longest_review_wait must run github_connector's own LONGEST_REVIEW_WAIT_SQL."""
+    assert agent._QUERY_MAP["longest_review_wait"] is LONGEST_REVIEW_WAIT_SQL
 
 # ---------------------------------------------------------------------------
 # metric_path() — must run the mapped SQL against the database and return rows
@@ -114,6 +121,43 @@ def test_metric_path_runs_review_turnaround_sql(
 
     assert state["rows"] == [{"avg_hours": 3.0}]
 
+def test_metric_path_runs_longest_review_wait_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only the PR with the longest wait for its first review must come back."""
+    db_path = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        # PR 1 waited 3 hours; PR 2 waited 10 hours for its first review. PR 2's later
+        # review must not matter, only the first one counts.
+        for number, title in ((1, "Quick PR"), (2, "Slow PR")):
+            session.add(
+                PullRequest(
+                    number=number,
+                    title=title,
+                    state="closed",
+                    created_at=datetime(2026, 1, 1, 9, 0),
+                    head_branch=f"AGENTS-{number}-x",
+                )
+            )
+        session.add(
+            PrReview(id=1, pr_number=1, state="APPROVED", submitted_at=datetime(2026, 1, 1, 12, 0))
+        )
+        session.add(
+            PrReview(id=2, pr_number=2, state="COMMENTED", submitted_at=datetime(2026, 1, 1, 19, 0))
+        )
+        session.add(
+            PrReview(id=3, pr_number=2, state="APPROVED", submitted_at=datetime(2026, 1, 2, 9, 0))
+        )
+        session.commit()
+
+    monkeypatch.setattr(agent, "DB_PATH", str(db_path))
+
+    state = agent.metric_path({"metric_key": "longest_review_wait"})
+
+    assert state["rows"] == [{"number": 2, "title": "Slow PR", "wait_hours": 10.0}]
 
 def test_metric_path_runs_unreviewed_prs_sql(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

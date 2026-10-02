@@ -202,6 +202,18 @@ FROM (
     GROUP BY p.number
 )
 """
+# Longest wait: the one pull request whose first review took the longest. Same
+# definition of "wait" as REVIEW_TURNAROUND_SQL (creation to first review), but
+# MAX instead of AVG, and the PR is named so the answer can say which one it was.
+LONGEST_REVIEW_WAIT_SQL = """
+SELECT p.number, p.title,
+       ROUND((julianday(MIN(r.submitted_at)) - julianday(p.created_at)) * 24, 1) AS wait_hours
+FROM pull_requests p
+JOIN pr_reviews r ON r.pr_number = p.number
+GROUP BY p.number
+ORDER BY wait_hours DESC
+LIMIT 1
+"""
 
 # Question J1: pull requests merged with no review at all.
 UNREVIEWED_PRS_SQL = """
