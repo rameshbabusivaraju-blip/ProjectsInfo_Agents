@@ -325,6 +325,33 @@ GROUP BY s.id
 ORDER BY s.start_date
 """
 
+# Logged vs planned hours per sprint — catalogue question A6.
+#
+# "Planned" is the sum of the original estimates on the sprint's tickets; Jira
+# has no team-capacity figure, so that is the only planned number available.
+# "Logged" is the work-log time on those same tickets. Each ticket counts only
+# in the last sprint it was in (the same rule as VELOCITY_SQL), so a carried-over
+# ticket is not counted twice. Work logs are added up per ticket first; joining
+# them straight onto the ticket would repeat its estimate once per log.
+LOGGED_VS_PLANNED_HOURS_SQL = """
+SELECT s.name AS sprint,
+       ROUND(COALESCE(SUM(t.original_estimate_seconds), 0) / 3600.0, 1) AS planned_hours,
+       ROUND(COALESCE(SUM(w.logged_seconds), 0) / 3600.0, 1) AS logged_hours
+FROM sprints s
+JOIN ticket_sprints ts ON ts.sprint_id = s.id
+JOIN tickets t ON t.key = ts.ticket_key
+LEFT JOIN (
+    SELECT ticket_key, SUM(seconds) AS logged_seconds
+    FROM work_logs
+    GROUP BY ticket_key
+) w ON w.ticket_key = t.key
+WHERE ts.position = (
+    SELECT MAX(position) FROM ticket_sprints WHERE ticket_key = t.key
+)
+GROUP BY s.id
+ORDER BY s.start_date
+"""
+
 def velocity() -> None:
     """Print points delivered per sprint — catalogue question A1."""
     with Session(engine) as session:
