@@ -20,8 +20,12 @@ from app.github_connector import (
     REVIEW_TURNAROUND_SQL,
     UNREVIEWED_PRS_SQL,
 )
-from app.jira_connector import COMMITTED_VS_DELIVERED_SQL, VELOCITY_SQL
-from app.models import PrReview, PullRequest, Sprint, Ticket, TicketSprint
+from app.jira_connector import (
+    COMMITTED_VS_DELIVERED_SQL,
+    LOGGED_VS_PLANNED_HOURS_SQL,
+    VELOCITY_SQL,
+)
+from app.models import PrReview, PullRequest, Sprint, Ticket, TicketSprint, WorkLog
 
 # ---------------------------------------------------------------------------
 # _QUERY_MAP — each metric_key must point at its own reviewed SQL constant
@@ -35,6 +39,10 @@ def test_query_map_velocity_uses_velocity_sql() -> None:
 def test_query_map_committed_vs_delivered_uses_committed_vs_delivered_sql() -> None:
     """committed_vs_delivered must run jira_connector's own COMMITTED_VS_DELIVERED_SQL."""
     assert agent._QUERY_MAP["committed_vs_delivered"] is COMMITTED_VS_DELIVERED_SQL
+
+def test_query_map_logged_vs_planned_hours_uses_logged_vs_planned_hours_sql() -> None:
+    """logged_vs_planned_hours must run jira_connector's own LOGGED_VS_PLANNED_HOURS_SQL."""
+    assert agent._QUERY_MAP["logged_vs_planned_hours"] is LOGGED_VS_PLANNED_HOURS_SQL
 
 def test_query_map_review_turnaround_uses_review_turnaround_sql() -> None:
     """review_turnaround must run github_connector's own REVIEW_TURNAROUND_SQL."""
@@ -130,6 +138,59 @@ def test_metric_path_runs_committed_vs_delivered_sql(
     assert state["rows"] == [
         {"sprint": "Sprint 1", "committed": 7.0, "delivered": 8.0},
         {"sprint": "Sprint 2", "committed": 2.0, "delivered": 0.0},
+    ]
+
+def test_metric_path_runs_logged_vs_planned_hours_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Hours come from estimates and work logs; a carried-over ticket counts once."""
+    db_path = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+
+    def ticket(key: str, estimate_seconds: int) -> Ticket:
+        return Ticket(
+            key=key,
+            summary=key,
+            issue_type="Task",
+            hierarchy_level=0,
+            status="Done",
+            status_category="done",
+            created=datetime(2026, 1, 1),
+            updated=datetime(2026, 1, 1),
+            original_estimate_seconds=estimate_seconds,
+        )
+
+    with Session(engine) as session:
+        session.add(Sprint(id=1, name="Sprint 1", state="closed", start_date=datetime(2026, 1, 10)))
+        session.add(Sprint(id=2, name="Sprint 2", state="active", start_date=datetime(2026, 1, 20)))
+        # A: 2h planned, two work logs (1h + 0.5h), only in Sprint 1.
+        # B: 1h planned, no logs, carried from Sprint 1 into Sprint 2, so it counts in Sprint 2.
+        session.add(ticket("AGENTS-1", 7200))
+        session.add(ticket("AGENTS-2", 3600))
+        session.add(TicketSprint(ticket_key="AGENTS-1", sprint_id=1, position=0))
+        session.add(TicketSprint(ticket_key="AGENTS-2", sprint_id=1, position=0))
+        session.add(TicketSprint(ticket_key="AGENTS-2", sprint_id=2, position=1))
+        for log_id, seconds in (("w1", 3600), ("w2", 1800)):
+            session.add(
+                WorkLog(
+                    id=log_id,
+                    ticket_key="AGENTS-1",
+                    author_id="acc-1",
+                    started=datetime(2026, 1, 11),
+                    seconds=seconds,
+                )
+            )
+        session.commit()
+
+    monkeypatch.setattr(agent, "DB_PATH", str(db_path))
+
+    state = agent.metric_path({"metric_key": "logged_vs_planned_hours"})
+
+    # Two logs on AGENTS-1 must not repeat its 2h estimate: planned stays 2.0.
+    assert state["rows"] == [
+        {"sprint": "Sprint 1", "planned_hours": 2.0, "logged_hours": 1.5},
+        {"sprint": "Sprint 2", "planned_hours": 1.0, "logged_hours": 0.0},
     ]
 
 def test_metric_path_runs_review_turnaround_sql(
