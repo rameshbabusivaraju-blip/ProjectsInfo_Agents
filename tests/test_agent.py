@@ -23,9 +23,18 @@ from app.github_connector import (
 from app.jira_connector import (
     COMMITTED_VS_DELIVERED_SQL,
     LOGGED_VS_PLANNED_HOURS_SQL,
+    RE_ESTIMATED_STORIES_SQL,
     VELOCITY_SQL,
 )
-from app.models import PrReview, PullRequest, Sprint, Ticket, TicketSprint, WorkLog
+from app.models import (
+    EstimateChange,
+    PrReview,
+    PullRequest,
+    Sprint,
+    Ticket,
+    TicketSprint,
+    WorkLog,
+)
 
 # ---------------------------------------------------------------------------
 # _QUERY_MAP — each metric_key must point at its own reviewed SQL constant
@@ -43,6 +52,10 @@ def test_query_map_committed_vs_delivered_uses_committed_vs_delivered_sql() -> N
 def test_query_map_logged_vs_planned_hours_uses_logged_vs_planned_hours_sql() -> None:
     """logged_vs_planned_hours must run jira_connector's own LOGGED_VS_PLANNED_HOURS_SQL."""
     assert agent._QUERY_MAP["logged_vs_planned_hours"] is LOGGED_VS_PLANNED_HOURS_SQL
+
+def test_query_map_re_estimated_stories_uses_re_estimated_stories_sql() -> None:
+    """re_estimated_stories must run jira_connector's own RE_ESTIMATED_STORIES_SQL."""
+    assert agent._QUERY_MAP["re_estimated_stories"] is RE_ESTIMATED_STORIES_SQL
 
 def test_query_map_review_turnaround_uses_review_turnaround_sql() -> None:
     """review_turnaround must run github_connector's own REVIEW_TURNAROUND_SQL."""
@@ -191,6 +204,74 @@ def test_metric_path_runs_logged_vs_planned_hours_sql(
     assert state["rows"] == [
         {"sprint": "Sprint 1", "planned_hours": 2.0, "logged_hours": 1.5},
         {"sprint": "Sprint 2", "planned_hours": 1.0, "logged_hours": 0.0},
+    ]
+
+def test_metric_path_runs_re_estimated_stories_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only a change of existing points, made during the sprint, counts as a re-estimate."""
+    db_path = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+
+    def change(
+        change_id: str, changed_at: datetime, from_points: float | None, to_points: float
+    ) -> EstimateChange:
+        return EstimateChange(
+            id=change_id,
+            ticket_key="AGENTS-1",
+            changed_at=changed_at,
+            from_points=from_points,
+            to_points=to_points,
+        )
+
+    with Session(engine) as session:
+        session.add(
+            Sprint(
+                id=1,
+                name="Sprint 1",
+                state="closed",
+                start_date=datetime(2026, 1, 10),
+                complete_date=datetime(2026, 1, 17),
+            )
+        )
+        session.add(
+            Ticket(
+                key="AGENTS-1",
+                summary="Story",
+                issue_type="Story",
+                hierarchy_level=0,
+                status="Done",
+                status_category="done",
+                story_points=5.0,
+                created=datetime(2026, 1, 1),
+                updated=datetime(2026, 1, 1),
+            )
+        )
+        session.add(TicketSprint(ticket_key="AGENTS-1", sprint_id=1, position=0))
+        # Before the sprint started: not a re-estimate for this sprint.
+        session.add(change("c1", datetime(2026, 1, 9), 2.0, 3.0))
+        # First time points were set, even though it is during the sprint: not a re-estimate.
+        session.add(change("c2", datetime(2026, 1, 11), None, 3.0))
+        # The one real re-estimate: existing points changed during the sprint.
+        session.add(change("c3", datetime(2026, 1, 12), 3.0, 5.0))
+        # After the sprint completed: not counted.
+        session.add(change("c4", datetime(2026, 1, 20), 5.0, 8.0))
+        session.commit()
+
+    monkeypatch.setattr(agent, "DB_PATH", str(db_path))
+
+    state = agent.metric_path({"metric_key": "re_estimated_stories"})
+
+    assert state["rows"] == [
+        {
+            "ticket": "AGENTS-1",
+            "summary": "Story",
+            "sprint": "Sprint 1",
+            "from_points": 3.0,
+            "to_points": 5.0,
+            "changed_at": "2026-01-12 00:00:00.000000",
+        }
     ]
 
 def test_metric_path_runs_review_turnaround_sql(
@@ -421,3 +502,4 @@ def test_compose_prompt_tells_model_to_admit_missing_data() -> None:
     assert "Never use general knowledge or guess" in system_text
     # The original rule about invented numbers must still be there.
     assert "Do not add any number that is not in the data" in system_text
+    assert "empty list, say that no matching records were found" in system_text

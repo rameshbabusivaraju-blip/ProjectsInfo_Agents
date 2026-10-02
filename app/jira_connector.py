@@ -19,7 +19,7 @@ from sqlalchemy import delete, text
 from sqlmodel import Session
 
 from app.db import engine, init_db
-from app.models import Person, Sprint, Ticket, TicketSprint, WorkLog
+from app.models import EstimateChange, Person, Sprint, Ticket, TicketSprint, WorkLog
 
 # Read .env into the process environment. Secrets never live in this file.
 load_dotenv()
@@ -80,6 +80,9 @@ def _required_dt(value: str) -> datetime:
     assert parsed is not None
     return parsed
 
+def _points(value: str | None) -> float | None:
+    """Convert a changelog value such as "5" or "5.0" to a number, or None if absent."""
+    return float(value) if value else None
 
 def _adf_text(node: Any) -> str:
     """Flatten Atlassian Document Format into plain text.
@@ -147,18 +150,33 @@ def fetch_worklogs(issue_key: str) -> list[dict[str, Any]]:
     """
     logs: list[dict[str, Any]] = _get(f"/rest/api/3/issue/{issue_key}/worklog")["worklogs"]
     return logs
+        
+def fetch_changelog(issue_key: str) -> list[dict[str, Any]]:
+    """Every field change on one issue, following pagination until Jira stops.
 
+    The change history is not part of the issue search response, so this is one
+    more call per issue, the same shape as fetch_worklogs(). Jira returns the
+    oldest changes first, in pages of at most 100.
+    """
+    entries: list[dict[str, Any]] = []
+    start_at = 0
 
+    while True:
+        page = _get(f"/rest/api/3/issue/{issue_key}/changelog", startAt=start_at, maxResults=100)
+        entries.extend(page["values"])
+        start_at += len(page["values"])
+        if page.get("isLast", True) or not page["values"]:
+            return entries
 # ---------------------------------------------------------------------------
 # Loading — transform the raw JSON into rows and write them
 # ---------------------------------------------------------------------------
 
 
 def load() -> None:
-    """Refresh the four Jira tables from what Jira currently says.
+    """Refresh the five Jira tables from what Jira currently says.
 
     The Jira tables are a mirror of Jira, not a second source of truth, so they
-    are cleared and refilled rather than updated in place. Only these four are
+    are cleared and refilled rather than updated in place. Only these five are
     cleared, so GitHub and Confluence data in the same database are untouched,
     the same convention as github_connector.load().
     """
@@ -186,6 +204,7 @@ def load() -> None:
 
     with Session(engine) as session:
         # Clear Jira rows only, children before parents because of the foreign keys.
+        session.exec(delete(EstimateChange))
         session.exec(delete(WorkLog))
         session.exec(delete(TicketSprint))
         session.exec(delete(Ticket))
@@ -246,6 +265,24 @@ def load() -> None:
                         position=position,
                     )
                 )
+            
+            # --- Story-point changes for this issue ------------------------
+            # Only the story point field is kept; the history also lists every
+            # status, assignee and sprint change, which no question needs yet.
+            for entry in fetch_changelog(issue["key"]):
+                for item in entry["items"]:
+                    if item.get("fieldId") != POINTS_FIELD:
+                        continue
+                    session.add(
+                        EstimateChange(
+                            id=entry["id"],
+                            ticket_key=issue["key"],
+                            changed_at=_required_dt(entry["created"]),
+                            from_points=_points(item.get("fromString")),
+                            to_points=_points(item.get("toString")),
+                        )
+                    )
+
 
             # --- Work logs for this issue ----------------------------------
             for entry in fetch_worklogs(issue["key"]):
@@ -350,6 +387,26 @@ WHERE ts.position = (
 )
 GROUP BY s.id
 ORDER BY s.start_date
+"""
+
+# Re-estimated stories — catalogue question A9.
+#
+# A re-estimate is a change of story points that had a previous value (the first
+# time points are set is an estimate, not a re-estimate). It counts for a sprint
+# when it happened after that sprint started and before it completed, on a ticket
+# that was in the sprint. A sprint that is still open has no complete_date, so
+# everything after its start counts.
+RE_ESTIMATED_STORIES_SQL = """
+SELECT t.key AS ticket, t.summary, s.name AS sprint,
+       e.from_points, e.to_points, e.changed_at
+FROM estimate_changes e
+JOIN tickets t ON t.key = e.ticket_key
+JOIN ticket_sprints ts ON ts.ticket_key = t.key
+JOIN sprints s ON s.id = ts.sprint_id
+WHERE e.from_points IS NOT NULL
+  AND e.changed_at > s.start_date
+  AND (s.complete_date IS NULL OR e.changed_at <= s.complete_date)
+ORDER BY s.start_date, e.changed_at
 """
 
 def velocity() -> None:
