@@ -63,4 +63,32 @@ public class IndexModel(ProjectPulseClient api, ILogger<IndexModel> logger) : Pa
             return StatusCode(502, new { error = "The ProjectPulse API did not answer. It may still be waking up; try again in a minute." });
         }
     }
+
+    /// <summary>
+    /// Handles GET /?handler=File&amp;name=report.xlsx. Fetches the file from the API with the
+    /// key and passes it to the browser, so the browser can download it without ever holding the key.
+    /// </summary>
+    public async Task<IActionResult> OnGetFileAsync(string? name)
+    {
+        // Only a plain file name is allowed; anything with a folder part is refused.
+        if (string.IsNullOrWhiteSpace(name) || name != Path.GetFileName(name))
+        {
+            return BadRequest();
+        }
+
+        try
+        {
+            var file = await api.DownloadAsync(name, HttpContext.RequestAborted);
+            if (file is null)
+            {
+                return NotFound("That file is no longer available. Ask the question again to create it.");
+            }
+            return File(file.Content, file.ContentType, file.FileName);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            logger.LogError(ex, "File download from the ProjectPulse API failed");
+            return StatusCode(502, "The ProjectPulse API did not answer. Try again in a minute.");
+        }
+    }
 }

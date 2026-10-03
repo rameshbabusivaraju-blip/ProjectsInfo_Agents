@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -27,6 +28,9 @@ public record AskResult(
     [property: JsonPropertyName("sources")] List<AnswerSource> Sources,
     [property: JsonPropertyName("file_url")] string? FileUrl);
 
+/// <summary>A file fetched from the API: its bytes, content type and name.</summary>
+public record FileDownload(byte[] Content, string ContentType, string FileName);
+
 /// <summary>
 /// Calls the ProjectPulse FastAPI backend from the server side.
 /// This is a typed client: IHttpClientFactory builds the HttpClient and hands it in,
@@ -50,5 +54,22 @@ public class ProjectPulseClient(HttpClient http)
         response.EnsureSuccessStatusCode();
         var result = await response.Content.ReadFromJsonAsync<AskResult>(cancellationToken);
         return result ?? throw new HttpRequestException("The API returned an empty answer.");
+    }
+
+    /// <summary>
+    /// Downloads a file the agent wrote (GET /files/{name}). Returns null if the API has no such
+    /// file, which happens when the host restarted and cleared its exports folder.
+    /// </summary>
+    public async Task<FileDownload?> DownloadAsync(string fileName, CancellationToken cancellationToken = default)
+    {
+        using var response = await http.GetAsync($"files/{Uri.EscapeDataString(fileName)}", cancellationToken);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+        response.EnsureSuccessStatusCode();
+        var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        var contentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream";
+        return new FileDownload(bytes, contentType, fileName);
     }
 }
