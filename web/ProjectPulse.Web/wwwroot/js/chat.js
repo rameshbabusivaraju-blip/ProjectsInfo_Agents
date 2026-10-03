@@ -25,6 +25,7 @@
     }
 
     const MAX_ROWS = 50;
+    const EXCERPT_LENGTH = 280;
 
     /** Creates an element with optional class and text. Text is set with textContent, so it is never read as HTML. */
     function el(tag, className, text) {
@@ -62,23 +63,104 @@
         return wrapper;
     }
 
-    /** Builds the "Why, from these documents" panel: one entry per document passage. */
-    function buildSources(sources) {
+    // Words that say little about what a question is about; they are not used to pick an excerpt.
+    const STOPWORDS = new Set(["what", "does", "were", "where", "which", "there", "their", "would", "should",
+        "could", "have", "been", "with", "without", "from", "that", "this", "your", "into", "about", "say",
+        "says", "decision", "log", "documents", "document", "also", "than", "then", "when", "whose", "were"]);
+
+    /** Removes markdown marks from a passage and collapses the spacing. */
+    function plainText(text) {
+        return text
+            .replace(/^#+\s*/gm, "")
+            .replace(/^-{3,}$/gm, " ")
+            .replace(/\*\*/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    /** The meaningful words of the question, cut to five letters so "reviews" also finds "reviewed". */
+    function keyTerms(question) {
+        const words = (String(question || "").toLowerCase().match(/[a-z0-9]{4,}/g) || [])
+            .filter(function (word) { return !STOPWORDS.has(word); });
+        return Array.from(new Set(words.map(function (word) { return word.length > 5 ? word.slice(0, 5) : word; })));
+    }
+
+    /**
+     * A short excerpt of a passage. It is the stretch of EXCERPT_LENGTH characters that contains the most
+     * of the question's key words (the start of the passage if none match), so the reader sees the lines
+     * that answer the question rather than the top of a long chunk.
+     */
+    function excerpt(text, terms) {
+        const plain = plainText(text);
+        if (plain.length <= EXCERPT_LENGTH) {
+            return plain;
+        }
+        const lower = plain.toLowerCase();
+        let bestStart = 0;
+        let bestScore = 0;
+        for (let start = 0; start + EXCERPT_LENGTH <= plain.length; start += 20) {
+            const window = lower.slice(start, start + EXCERPT_LENGTH);
+            const score = terms.filter(function (term) { return window.indexOf(term) !== -1; }).length;
+            if (score > bestScore) {
+                bestScore = score;
+                bestStart = start;
+            }
+        }
+        // Begin at a word boundary so the excerpt does not open in the middle of a word.
+        if (bestStart > 0) {
+            const space = plain.indexOf(" ", bestStart);
+            bestStart = space === -1 ? bestStart : space + 1;
+        }
+        const end = bestStart + EXCERPT_LENGTH;
+        const piece = plain.slice(bestStart, end).trimEnd();
+        return (bestStart > 0 ? "…" : "") + piece + (end < plain.length ? "…" : "");
+    }
+
+    /** Groups passages by document, keeping the order they came in (best match first). */
+    function groupByDocument(sources) {
+        const groups = [];
+        sources.forEach(function (source) {
+            const key = source.title + "|" + (source.url || "");
+            let group = groups.find(function (candidate) { return candidate.key === key; });
+            if (!group) {
+                group = { key: key, title: source.title, url: source.url, passages: [] };
+                groups.push(group);
+            }
+            group.passages.push(source.text);
+        });
+        return groups;
+    }
+
+    /**
+     * Builds the "Why, from these documents" panel: one entry per document, showing the best passage as a
+     * short excerpt. Further passages from the same document sit in a collapsed list under it.
+     */
+    function buildSources(sources, question) {
+        const terms = keyTerms(question);
         const panel = el("details", "chat-sources");
         panel.open = true;
         panel.appendChild(el("summary", null, "Why, from these documents"));
-        sources.forEach(function (source) {
+        groupByDocument(sources).forEach(function (group) {
             const entry = el("div", "chat-source");
-            if (source.url) {
-                const link = el("a", null, source.title);
-                link.href = source.url;
+            if (group.url) {
+                const link = el("a", null, group.title);
+                link.href = group.url;
                 link.target = "_blank";
                 link.rel = "noopener noreferrer";
                 entry.appendChild(el("strong")).appendChild(link);
             } else {
-                entry.appendChild(el("strong", null, source.title));
+                entry.appendChild(el("strong", null, group.title));
             }
-            entry.appendChild(el("div", "text-muted small", source.text));
+            entry.appendChild(el("div", "text-muted small", excerpt(group.passages[0], terms)));
+            if (group.passages.length > 1) {
+                const more = el("details", "chat-more");
+                const count = group.passages.length - 1;
+                more.appendChild(el("summary", "small", count + " more passage" + (count === 1 ? "" : "s") + " from this document"));
+                group.passages.slice(1).forEach(function (passage) {
+                    more.appendChild(el("div", "text-muted small chat-more-item", excerpt(passage, terms)));
+                });
+                entry.appendChild(more);
+            }
             panel.appendChild(entry);
         });
         return panel;
@@ -91,7 +173,7 @@
             parts.push(buildTable(data.rows));
         }
         if (data.sources && data.sources.length > 0) {
-            parts.push(buildSources(data.sources));
+            parts.push(buildSources(data.sources, data.question));
         }
         if (data.file_url) {
             const name = decodeURIComponent(data.file_url.split("/").pop());
