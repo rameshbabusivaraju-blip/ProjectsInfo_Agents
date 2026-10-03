@@ -6,10 +6,15 @@ calling app.agent's compiled LangGraph agent -- the same graph app/agent.py's
 own CLI (python -m app.agent) already calls.
 """
 
-from fastapi import FastAPI
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.agent import agent
+from app.excel_export import EXPORTS_DIR
 
 app = FastAPI(
     title="ProjectPulse API",
@@ -29,18 +34,38 @@ class AskRequest(BaseModel):
     question: str
 
 
+class Source(BaseModel):
+    """One document passage an answer drew on: the page title, its link, the text and the score."""
+
+    title: str
+    url: str | None = None
+    text: str
+    score: float
+
+
 class AskResponse(BaseModel):
-    """What POST /ask returns: the answer, plus how the question was classified.
+    """What POST /ask returns: the answer, the rows behind it, any sources and any file.
 
     metric_key is included (rather than just the answer) so Swagger and any
     caller can see which path handled the question -- useful while the agent
     only covers some of the catalogue, and free: classify_intent already
     computes it.
+
+    rows is the data the answer was written from, so a screen can show a real
+    table instead of parsing a sentence (AGENTS-65). file_url is set only when
+    the agent wrote a file; it is a path on this API that downloads it.
+
+    sources holds the document passages behind a narrative or hybrid answer
+    (AGENTS-74), kept apart from rows so a screen can show the figures and the
+    reasons separately. It is empty for a metric answer.
     """
 
     question: str
     answer: str
     metric_key: str
+    rows: list[dict[str, Any]]
+    sources: list[Source] = []
+    file_url: str | None = None
 
 
 @app.post("/ask")
@@ -51,8 +76,27 @@ def ask(request: AskRequest) -> AskResponse:
     just exposes agent.invoke() over HTTP.
     """
     result = agent.invoke({"question": request.question})
+    file_path = result.get("file_path")
     return AskResponse(
         question=request.question,
         answer=result["answer"],
         metric_key=result["metric_key"],
+        rows=result.get("rows", []),
+        sources=result.get("sources", []),
+        file_url=f"/files/{Path(file_path).name}" if file_path else None,
     )
+
+
+@app.get("/files/{filename}")
+def download_file(filename: str) -> FileResponse:
+    """Download a file the agent wrote, such as an Excel export (AGENTS-65).
+
+    Only files directly inside the exports folder can be reached. The name is
+    resolved to a real path and checked, so a name like ".." cannot climb out
+    of that folder.
+    """
+    exports_dir = EXPORTS_DIR.resolve()
+    path = (exports_dir / filename).resolve()
+    if path.parent != exports_dir or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(path, filename=path.name)
