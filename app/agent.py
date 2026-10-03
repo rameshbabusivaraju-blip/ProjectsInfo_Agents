@@ -41,7 +41,7 @@ from app.jira_connector import (
     VELOCITY_SQL,
 )
 from app.llm.provider import get_llm
-from app.retrieval import search
+from app.retrieval import SearchResult, search
 
 DB_PATH = "projectpulse.db"
 
@@ -54,7 +54,9 @@ class AgentState(TypedDict, total=False):
     doc_type: str
     hybrid_metric_key: str
     rows: list[dict[str, Any]]
+    sources: list[dict[str, Any]]
     answer: str
+    file_path: str
 
 class Classification(BaseModel):
     """Structured output for classify_intent.
@@ -82,10 +84,13 @@ class Classification(BaseModel):
         "'hybrid'. Matches AGENTS-37's per-doc-type FAISS indexes, hand-maintained same as "
         "doc_type_rules.json (RAID log A2: the document set stays small enough for that).",
     )
-    hybrid_metric_key: Literal["velocity", "review_turnaround", "unreviewed_prs"] | None = Field(
+    hybrid_metric_key: Literal[
+        "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
+        "review_turnaround", "longest_review_wait", "unreviewed_prs",
+    ] | None = Field(
         default=None,
         description="Which metric query supplies the number half of a hybrid answer. Only set "
-        "when metric_key is 'hybrid'.",
+        "when metric_key is 'hybrid'. Any of the seven metric queries can be used.",
     )
 
 _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
@@ -105,7 +110,8 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "question is actually about\n"
      "hybrid = needs both a database number and a document search in the same answer -- when "
      "you pick this, set doc_type as above AND hybrid_metric_key to whichever of velocity, "
-     "review_turnaround, unreviewed_prs supplies the number"),
+     "committed_vs_delivered, logged_vs_planned_hours, re_estimated_stories, "
+     "review_turnaround, longest_review_wait, unreviewed_prs supplies the number"),
     ("human", "{question}"),
 ])
 
@@ -169,18 +175,37 @@ def export_path(state: AgentState) -> AgentState:
     last_sprint = all_sprints[-1:]
     state["rows"] = last_sprint
     path = export_to_excel(last_sprint, "last_sprint_velocity.xlsx")
+    state["file_path"] = path
     state["answer"] = f"Wrote {len(last_sprint)} row(s) to {path}."
     return state
  
  
-def narrative_path(state: AgentState) -> AgentState:
-    """Retrieve the top matching chunks for a narrative question (AGENTS-39).
+def _source(result: SearchResult) -> dict[str, Any]:
+    """Turn one retrieved chunk into a source: the page title, its link, the text and the score.
 
-    Mirrors metric_path: it only gathers data into state["rows"], in the same
-    shape compose_answer already expects, so compose_answer needs no change to
-    handle retrieval instead of SQL. Uses AGENTS-38's search(), which confines
-    the search to state["doc_type"] and applies whatever ticket/date filters
-    were passed (none, here -- this ticket only wires the plain lookup in).
+    The title and link are looked up in confluence_pages so a reader sees which
+    document a reason came from. If the page is not in the database (or the
+    table does not exist yet), the document id is shown instead of a title.
+    """
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT title, url FROM confluence_pages WHERE id = ?", (result.page_id,)
+            ).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    title, url = row if row else (result.doc_id, None)
+    return {"title": title, "url": url, "text": result.text, "score": result.score}
+
+
+def narrative_path(state: AgentState) -> AgentState:
+    """Retrieve the top matching chunks for a narrative question (AGENTS-39, AGENTS-74).
+
+    Gathers the passages into state["sources"] (title, link, text, score).
+    state["rows"] stays empty because there are no numbers. Uses AGENTS-38's
+    search(), which confines the search to state["doc_type"] and applies
+    whatever ticket/date filters were passed (none, here -- this ticket only
+    wires the plain lookup in).
 
     A combined filter or a genuinely unmatched question can make search()
     return nothing (ADR-003: accept lower recall). That is answered honestly
@@ -190,26 +215,29 @@ def narrative_path(state: AgentState) -> AgentState:
     """
     doc_type = state["doc_type"]
     results = search(state["question"], doc_type)
+    state["rows"] = []
     if not results:
-        state["rows"] = []
+        state["sources"] = []
         state["answer"] = f"No matching content found in the project's {doc_type} documents."
         return state
-    state["rows"] = [{"text": r.text, "doc_id": r.doc_id, "score": r.score} for r in results]
+    # Passages go in "sources", not "rows": rows are for numbers a screen can draw as a table.
+    state["sources"] = [_source(r) for r in results]
     return state
 
 
 def hybrid_path(state: AgentState) -> AgentState:
-    """Run the SQL metric and the document search, and merge their rows (AGENTS-41).
+    """Run the SQL metric and the document search, and keep them apart (AGENTS-41, AGENTS-74).
 
-    Reuses metric_path and narrative_path exactly as they already are -- this
-    node's only job is to call both and combine what they put in
-    state["rows"], so compose_answer (which already just reads state["rows"])
-    needs no change to summarise a hybrid answer instead of a single-source one.
+    Reuses metric_path and narrative_path exactly as they already are. The
+    numbers stay in state["rows"] and the document passages go in
+    state["sources"], so a screen can show "the figures" and "the reason, from
+    this document" as two parts, and compose_answer can name the document.
     """
     question, doc_type = state["question"], state["doc_type"]
     metric_rows = metric_path({"metric_key": state["hybrid_metric_key"]})["rows"]
-    narrative_rows = narrative_path({"question": question, "doc_type": doc_type})["rows"]
-    state["rows"] = metric_rows + narrative_rows
+    narrative_state = narrative_path({"question": question, "doc_type": doc_type})
+    state["rows"] = metric_rows
+    state["sources"] = narrative_state.get("sources", [])
     return state
 
 
@@ -217,11 +245,11 @@ def refuse_path(state: AgentState) -> AgentState:
     """Answer honestly when the question matches none of the known paths."""
     state["rows"] = []
     state["answer"] = (
-        "I can answer sprint velocity, PR review turnaround, PRs merged "
-        "without review, export the last sprint's velocity to Excel, "
-        "questions answered by the project's own documents, or questions "
-        "that combine a number with the project's own documents. This "
-        "question doesn't match any of those."
+        "I can answer sprint velocity, committed versus delivered points, logged versus "
+        "planned hours, re-estimated stories, PR review turnaround, the longest PR review "
+        "wait, PRs merged without review, export the last sprint's velocity to Excel, "
+        "questions answered by the project's own documents, or questions that combine a "
+        "number with the project's own documents. This question doesn't match any of those."
     )
     return state
  
@@ -230,20 +258,53 @@ _COMPOSE_PROMPT = ChatPromptTemplate.from_messages([
     ("system",
      "Answer the question in one short sentence using only the data given. "
      "Do not add any number that is not in the data. "
-     "If the data does not answer the question, say so plainly. "
-     "If the data is an empty list, say that no matching records were found. "
+     "If the data does not answer the question at all, say so plainly. "
+     "If the data answers only part of the question, give that part and do not say that the "
+     "data does not answer it. "
      "If the data is an empty list, say that no matching records were found. "
      "Never use general knowledge or guess."),
     ("human", "Question: {question}\nData: {rows}"),
 ])
- 
- 
+
+# Hybrid answers get their own prompt: a number from the database plus a reason from a
+# document, with the document named so the reader can check it (AGENTS-74).
+_HYBRID_COMPOSE_PROMPT = ChatPromptTemplate.from_messages([
+    ("system",
+     "Answer the question in at most two short sentences using only the data given. "
+     "The numbers come from the project's database. The documents are passages from the "
+     "project's own pages. Give the number first, then the reason or rule from the "
+     "documents, and name the document it came from. "
+     "Do not add any number that is not in the data. "
+     "If no document explains it, give the number and say that no document explains it. "
+     "If the numbers list is empty, say that no matching records were found. "
+     "Never use general knowledge or guess."),
+    ("human", "Question: {question}\nNumbers: {rows}\nDocuments: {sources}"),
+])
+
+
+def _for_prompt(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the document title and text of each source: the link and score are noise here."""
+    return [{"document": s["title"], "text": s["text"]} for s in sources]
+
+
 def compose_answer(state: AgentState) -> AgentState:
-    """Phrase the SQL rows as a sentence. Skipped if refuse_path already answered."""
+    """Phrase the rows and passages as a sentence. Skipped if a path already answered."""
     if state.get("answer"):
         return state
+    metric_key = state.get("metric_key")
+    sources = _for_prompt(state.get("sources", []))
+
+    if metric_key == "hybrid":
+        chain = _HYBRID_COMPOSE_PROMPT | get_llm("strong") | StrOutputParser()
+        state["answer"] = chain.invoke(
+            {"question": state["question"], "rows": state["rows"], "sources": sources}
+        )
+        return state
+
+    # A narrative question has passages and no rows; every other path has rows.
+    data = sources if metric_key == "narrative" else state["rows"]
     chain = _COMPOSE_PROMPT | get_llm("strong") | StrOutputParser()
-    state["answer"] = chain.invoke({"question": state["question"], "rows": state["rows"]})
+    state["answer"] = chain.invoke({"question": state["question"], "rows": data})
     return state
  
  

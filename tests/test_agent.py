@@ -9,9 +9,12 @@ or GitHub call, same spirit as test_provider.py.
 
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
+from langchain_core.runnables import RunnableLambda
 from openpyxl import load_workbook
+from pydantic import ValidationError
 from sqlmodel import Session, SQLModel, create_engine
 
 from app import agent, excel_export, retrieval
@@ -27,6 +30,7 @@ from app.jira_connector import (
     VELOCITY_SQL,
 )
 from app.models import (
+    ConfluencePage,
     EstimateChange,
     PrReview,
     PullRequest,
@@ -432,6 +436,7 @@ def test_export_path_writes_last_sprint_to_excel(
 
     assert state["rows"] == [{"sprint": "Sprint 2", "delivered": 8.0}]
     assert state["answer"] == f"Wrote 1 row(s) to {tmp_path / 'last_sprint_velocity.xlsx'}."
+    assert state["file_path"] == str(tmp_path / "last_sprint_velocity.xlsx")
 
     workbook = load_workbook(tmp_path / "last_sprint_velocity.xlsx")
     worksheet = workbook.active
@@ -458,28 +463,74 @@ def test_route_sends_narrative_to_narrative_path() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_narrative_path_turns_search_results_into_rows(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Retrieved chunks must land in state["rows"] in the same shape metric_path uses."""
-    fake_result = retrieval.SearchResult(
+def _fake_result(page_id: str = "10092545") -> retrieval.SearchResult:
+    """A retrieved chunk from one Confluence page, for the narrative and hybrid tests."""
+    return retrieval.SearchResult(
         score=0.692,
         text="R2 | ... | Unassigned | Open",
-        doc_id="confluence:10092545",
+        doc_id=f"confluence:{page_id}",
         doc_type="raid_log",
         space_key="ConProK",
-        page_id="10092545",
+        page_id=page_id,
         version=1,
         ticket_ids=[],
         author_id=None,
         updated_at="2026-09-25T00:00:00",
     )
-    monkeypatch.setattr(agent, "search", lambda question, doc_type: [fake_result])
+
+
+def _confluence_db(tmp_path: Path) -> Path:
+    """A temp database holding one Confluence page, so a source can be given its title."""
+    db_path = tmp_path / "test.db"
+    engine = create_engine(f"sqlite:///{db_path}")
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(
+            ConfluencePage(
+                id="10092545",
+                title="RAID Log — ProjectPulse",
+                space_key="ConProK",
+                url="https://wiki.example/raid",
+                version=1,
+                updated=datetime(2026, 9, 25),
+            )
+        )
+        session.commit()
+    return db_path
+
+
+def test_narrative_path_turns_search_results_into_sources(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Retrieved chunks must land in state["sources"] with their page title and link."""
+    monkeypatch.setattr(agent, "DB_PATH", str(_confluence_db(tmp_path)))
+    monkeypatch.setattr(agent, "search", lambda question, doc_type: [_fake_result()])
 
     state = agent.narrative_path({"question": "which risks have no owner", "doc_type": "raid_log"})
 
-    assert state["rows"] == [
-        {"text": fake_result.text, "doc_id": "confluence:10092545", "score": 0.692}
+    assert state["rows"] == []
+    assert state["sources"] == [
+        {
+            "title": "RAID Log — ProjectPulse",
+            "url": "https://wiki.example/raid",
+            "text": "R2 | ... | Unassigned | Open",
+            "score": 0.692,
+        }
     ]
-    assert "answer" not in state  # compose_answer still has to run on these rows
+    assert "answer" not in state  # compose_answer still has to run on these sources
+
+
+def test_narrative_path_falls_back_to_the_doc_id_when_the_page_is_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A page missing from the database (or no table at all) must not break the search."""
+    monkeypatch.setattr(agent, "DB_PATH", str(tmp_path / "empty.db"))
+    monkeypatch.setattr(agent, "search", lambda question, doc_type: [_fake_result()])
+
+    state = agent.narrative_path({"question": "which risks have no owner", "doc_type": "raid_log"})
+
+    assert state["sources"][0]["title"] == "confluence:10092545"
+    assert state["sources"][0]["url"] is None
 
 
 def test_narrative_path_answers_honestly_when_nothing_matches(
@@ -491,15 +542,164 @@ def test_narrative_path_answers_honestly_when_nothing_matches(
     state = agent.narrative_path({"question": "anything", "doc_type": "retro"})
 
     assert state["rows"] == []
+    assert state["sources"] == []
     assert state["answer"] == "No matching content found in the project's retro documents."
+
+
+# ---------------------------------------------------------------------------
+# hybrid_path() — AGENTS-74: any metric, numbers and sources kept apart
+# ---------------------------------------------------------------------------
+
+
+def test_hybrid_path_keeps_numbers_and_sources_apart(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The number rows and the document sources must not be mixed into one list."""
+    asked_for: list[str] = []
+
+    def fake_metric_path(state: agent.AgentState) -> agent.AgentState:
+        asked_for.append(state["metric_key"])
+        return {"rows": [{"sprint": "Sprint 1", "committed": 7.0, "delivered": 8.0}]}
+
+    monkeypatch.setattr(agent, "DB_PATH", str(_confluence_db(tmp_path)))
+    monkeypatch.setattr(agent, "metric_path", fake_metric_path)
+    monkeypatch.setattr(agent, "search", lambda question, doc_type: [_fake_result()])
+
+    state = agent.hybrid_path(
+        {
+            "question": "did we meet the sprint goal",
+            "doc_type": "retro",
+            "hybrid_metric_key": "committed_vs_delivered",
+        }
+    )
+
+    # One of the four metrics that could not be used in a hybrid answer before AGENTS-74.
+    assert asked_for == ["committed_vs_delivered"]
+    assert state["rows"] == [{"sprint": "Sprint 1", "committed": 7.0, "delivered": 8.0}]
+    assert [s["title"] for s in state["sources"]] == ["RAID Log — ProjectPulse"]
+
+
+def test_hybrid_path_still_answers_when_no_document_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No matching passage must leave the numbers in place and the sources empty."""
+    monkeypatch.setattr(agent, "metric_path", lambda state: {"rows": [{"avg_hours": 3.0}]})
+    monkeypatch.setattr(agent, "search", lambda question, doc_type: [])
+
+    state = agent.hybrid_path(
+        {"question": "q", "doc_type": "retro", "hybrid_metric_key": "review_turnaround"}
+    )
+
+    assert state["rows"] == [{"avg_hours": 3.0}]
+    assert state["sources"] == []
+
+
+def test_classification_accepts_every_metric_for_a_hybrid_answer() -> None:
+    """Each of the seven metric queries must be allowed as the number half of a hybrid answer."""
+    for key in agent._QUERY_MAP:
+        agent.Classification.model_validate(
+            {"metric_key": "hybrid", "doc_type": "retro", "hybrid_metric_key": key}
+        )
+
+
+def test_classification_rejects_an_unknown_hybrid_metric() -> None:
+    """A metric that has no query must not be accepted as the number half of a hybrid."""
+    with pytest.raises(ValidationError):
+        agent.Classification.model_validate(
+            {"metric_key": "hybrid", "doc_type": "retro", "hybrid_metric_key": "burndown"}
+        )
+
+
+# ---------------------------------------------------------------------------
+# compose_answer() — which prompt and which data reach the model
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def seen_prompts(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Replace the strong model with a stub that records the prompt text it is given."""
+    prompts: list[str] = []
+
+    def fake_model(prompt_value: Any) -> str:
+        prompts.append(prompt_value.to_string())
+        return "an answer"
+
+    monkeypatch.setattr(agent, "get_llm", lambda tier: RunnableLambda(fake_model))
+    return prompts
+
+
+def test_compose_answer_gives_a_hybrid_question_both_numbers_and_documents(
+    seen_prompts: list[str],
+) -> None:
+    """A hybrid question must see its numbers and its document titles, under the hybrid prompt."""
+    source = {"title": "Retro — SCRUM Sprint 1", "url": "u", "text": "went well", "score": 0.5}
+
+    state = agent.compose_answer(
+        {
+            "question": "q",
+            "metric_key": "hybrid",
+            "rows": [{"delivered": 31.0}],
+            "sources": [source],
+        }
+    )
+
+    assert state["answer"] == "an answer"
+    assert "Numbers: [{'delivered': 31.0}]" in seen_prompts[0]
+    assert "'document': 'Retro — SCRUM Sprint 1'" in seen_prompts[0]
+    assert "name the document it came from" in seen_prompts[0]
+
+
+def test_compose_answer_gives_a_narrative_question_its_passages(seen_prompts: list[str]) -> None:
+    """A narrative question has no rows, so the model must be given the passages instead."""
+    source = {"title": "RAID Log — ProjectPulse", "url": None, "text": "R2 unowned", "score": 0.7}
+
+    agent.compose_answer(
+        {"question": "q", "metric_key": "narrative", "rows": [], "sources": [source]}
+    )
+
+    assert "'document': 'RAID Log — ProjectPulse'" in seen_prompts[0]
+    assert "'text': 'R2 unowned'" in seen_prompts[0]
+
+
+def test_compose_answer_gives_a_metric_question_its_rows(seen_prompts: list[str]) -> None:
+    """A metric question must still be answered from its SQL rows only."""
+    agent.compose_answer({"question": "q", "metric_key": "velocity", "rows": [{"delivered": 5.0}]})
+
+    assert "Data: [{'delivered': 5.0}]" in seen_prompts[0]
+
+
+def test_compose_answer_leaves_an_existing_answer_alone(seen_prompts: list[str]) -> None:
+    """A path that already wrote the answer (export, refuse, no match) must not call the model."""
+    state = agent.compose_answer({"question": "q", "metric_key": "other", "answer": "done"})
+
+    assert state["answer"] == "done"
+    assert seen_prompts == []
+
 
 def test_compose_prompt_tells_model_to_admit_missing_data() -> None:
     """The compose prompt must forbid guessing when the rows do not answer the question."""
     messages = agent._COMPOSE_PROMPT.format_messages(question="Who won the cup?", rows=[])
     system_text = str(messages[0].content)
 
-    assert "does not answer the question, say so plainly" in system_text
+    assert "does not answer the question at all, say so plainly" in system_text
     assert "Never use general knowledge or guess" in system_text
+    # A partial answer must not open with "the data does not answer this question".
+    assert "answers only part of the question, give that part" in system_text
     # The original rule about invented numbers must still be there.
     assert "Do not add any number that is not in the data" in system_text
     assert "empty list, say that no matching records were found" in system_text
+    # The empty-list sentence used to be repeated by mistake.
+    assert system_text.count("empty list, say that no matching records were found") == 1
+
+
+def test_refuse_path_lists_everything_the_agent_can_answer() -> None:
+    """The refusal must name the newer metrics, not only the original three."""
+    state = agent.refuse_path({"question": "what is the weather"})
+
+    for phrase in (
+        "committed versus delivered",
+        "logged versus planned hours",
+        "re-estimated stories",
+        "longest PR review wait",
+    ):
+        assert phrase in state["answer"]
