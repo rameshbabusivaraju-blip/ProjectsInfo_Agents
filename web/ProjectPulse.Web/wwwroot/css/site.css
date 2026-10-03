@@ -31,3 +31,14 @@ body {
 .chat-form { display: flex; gap: .5rem; align-items: flex-end; position: sticky; bottom: 0; background: #fff; padding: .5rem 0 1rem; }
 .chat-form textarea { resize: none; }
 .chat-error { background: #f8d7da; color: #842029; }
+
+/* Rich answers: table, sources, download link (AGENTS-69, 70) */
+.chat-rich { max-width: 100%; width: 100%; }
+.chat-answer { white-space: pre-wrap; }
+.chat-table-wrap { overflow-x: auto; margin-top: .6rem; background: #fff; border-radius: .5rem; padding: .25rem .5rem; }
+.chat-table { margin-bottom: 0; font-size: .9rem; }
+.chat-table th { text-transform: capitalize; white-space: nowrap; }
+.chat-sources { margin-top: .6rem; }
+.chat-sources summary { cursor: pointer; font-weight: 600; }
+.chat-source { margin-top: .4rem; }
+.chat-download { margin-top: .6rem; }
