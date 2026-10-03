@@ -42,3 +42,6 @@ body {
 .chat-sources summary { cursor: pointer; font-weight: 600; }
 .chat-source { margin-top: .4rem; }
 .chat-download { margin-top: .6rem; }
+.chat-more { margin-top: .3rem; }
+.chat-more summary { cursor: pointer; color: #0d6efd; }
+.chat-more-item { margin-top: .3rem; padding-left: .75rem; border-left: 2px solid #ced4da; }
