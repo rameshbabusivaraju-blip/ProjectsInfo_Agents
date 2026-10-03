@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from app import main
 from app.agent import agent
 
-client = TestClient(main.app)
+client = TestClient(main.app, headers={"X-API-Key": "test-key"})
 
 
 def test_ask_returns_the_agents_answer(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -151,3 +151,41 @@ def test_ask_rejects_a_missing_question() -> None:
     response = client.post("/ask", json={})
 
     assert response.status_code == 422
+
+def test_ask_rejects_a_request_without_the_api_key() -> None:
+    """No X-API-Key header must stop the request before the agent runs."""
+    response = TestClient(main.app).post("/ask", json={"question": "velocity"})
+
+    assert response.status_code == 401
+
+
+def test_ask_rejects_a_wrong_api_key() -> None:
+    """A key that does not match PROJECTPULSE_API_KEY must be refused."""
+    response = TestClient(main.app).post(
+        "/ask", json={"question": "velocity"}, headers={"X-API-Key": "wrong"}
+    )
+
+    assert response.status_code == 401
+
+
+def test_files_rejects_a_request_without_the_api_key() -> None:
+    """Downloads need the key too, not only questions."""
+    response = TestClient(main.app).get("/files/report.xlsx")
+
+    assert response.status_code == 401
+
+
+def test_routes_stay_closed_when_no_key_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With PROJECTPULSE_API_KEY unset the API must refuse, not open up."""
+    monkeypatch.delenv("PROJECTPULSE_API_KEY")
+
+    response = client.post("/ask", json={"question": "velocity"})
+
+    assert response.status_code == 503
+
+
+def test_health_needs_no_api_key() -> None:
+    """/health must stay open so the host can probe it."""
+    assert TestClient(main.app).get("/health").status_code == 200

@@ -4,16 +4,20 @@ Exposes the agent over HTTP. /health proves the deployment pipeline works,
 from the walking-skeleton phase. /ask (AGENTS-42) answers a real question by
 calling app.agent's compiled LangGraph agent -- the same graph app/agent.py's
 own CLI (python -m app.agent) already calls.
+
+/ask and /files need an X-API-Key header (AGENTS-53); /health stays open so
+the host can check the service without a key.
 """
 
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.agent import agent
+from app.auth import require_api_key
 from app.excel_export import EXPORTS_DIR
 
 app = FastAPI(
@@ -68,7 +72,7 @@ class AskResponse(BaseModel):
     file_url: str | None = None
 
 
-@app.post("/ask")
+@app.post("/ask", dependencies=[Depends(require_api_key)])
 def ask(request: AskRequest) -> AskResponse:
     """Run a question through the agent and return its answer.
 
@@ -87,7 +91,7 @@ def ask(request: AskRequest) -> AskResponse:
     )
 
 
-@app.get("/files/{filename}")
+@app.get("/files/{filename}", dependencies=[Depends(require_api_key)])
 def download_file(filename: str) -> FileResponse:
     """Download a file the agent wrote, such as an Excel export (AGENTS-65).
 
