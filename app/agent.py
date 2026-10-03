@@ -53,6 +53,7 @@ class AgentState(TypedDict, total=False):
     metric_key: str
     doc_type: str
     hybrid_metric_key: str
+    search_query: str
     rows: list[dict[str, Any]]
     sources: list[dict[str, Any]]
     answer: str
@@ -84,6 +85,13 @@ class Classification(BaseModel):
         "'hybrid'. Matches AGENTS-37's per-doc-type FAISS indexes, hand-maintained same as "
         "doc_type_rules.json (RAID log A2: the document set stays small enough for that).",
     )
+    search_query: str | None = Field(
+        default=None,
+        description="Set when metric_key is 'narrative' or 'hybrid'. The question rewritten as "
+        "a search phrase for the project documents: drop filler words and use the wording the "
+        "documents would use (for example 'pull request review and approval' for 'how are code "
+        "reviews done'). A short generic question searches badly as written.",
+    )
     hybrid_metric_key: Literal[
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
         "review_turnaround", "longest_review_wait", "unreviewed_prs",
@@ -108,6 +116,21 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "when you pick this, also set doc_type to whichever of charter, decision_log, general, "
      "plan_of_action, pm_notes, question_catalogue, raid_log, retro, sprint_summary the "
      "question is actually about\n"
+     "What each doc_type holds:\n"
+     "decision_log = architecture decisions (ADRs) and how the team works: development process, "
+     "code review, branching, tooling, tech choices and why they were made\n"
+     "charter = project goals, scope, stakeholders, success criteria\n"
+     "plan_of_action = phases, milestones, the build plan\n"
+     "pm_notes = project manager's working notes\n"
+     "question_catalogue = the list of questions the agent is meant to answer\n"
+     "raid_log = risks, assumptions, issues, dependencies\n"
+     "retro = sprint retrospectives: what went well, what did not\n"
+     "sprint_summary = per-sprint summaries\n"
+     "general = only for pages that fit none of the above; never pick it for a question about "
+     "how the team works or why a decision was made\n"
+     "For narrative or hybrid, also set search_query: the question rewritten as a short phrase "
+     "using the words the documents would use, e.g. 'how are code reviews done' -> 'pull request "
+     "review and approval process'\n"
      "hybrid = needs both a database number and a document search in the same answer -- when "
      "you pick this, set doc_type as above AND hybrid_metric_key to whichever of velocity, "
      "committed_vs_delivered, logged_vs_planned_hours, re_estimated_stories, "
@@ -123,6 +146,8 @@ def classify_intent(state: AgentState) -> AgentState:
     state["metric_key"] = result.metric_key
     if result.doc_type:
         state["doc_type"] = result.doc_type
+    if result.search_query:
+        state["search_query"] = result.search_query
     if result.hybrid_metric_key:
         state["hybrid_metric_key"] = result.hybrid_metric_key
     return state
@@ -214,7 +239,8 @@ def narrative_path(state: AgentState) -> AgentState:
     strong-tier model to invent an answer from outside the retrieved data.
     """
     doc_type = state["doc_type"]
-    results = search(state["question"], doc_type)
+    # The classifier's rewritten phrase searches better than a short, generic question.
+    results = search(state.get("search_query") or state["question"], doc_type)
     state["rows"] = []
     if not results:
         state["sources"] = []
@@ -235,7 +261,9 @@ def hybrid_path(state: AgentState) -> AgentState:
     """
     question, doc_type = state["question"], state["doc_type"]
     metric_rows = metric_path({"metric_key": state["hybrid_metric_key"]})["rows"]
-    narrative_state = narrative_path({"question": question, "doc_type": doc_type})
+    narrative_state = narrative_path(
+        {"question": question, "doc_type": doc_type, "search_query": state.get("search_query", "")}
+    )
     state["rows"] = metric_rows
     state["sources"] = narrative_state.get("sources", [])
     return state

@@ -520,6 +520,31 @@ def test_narrative_path_turns_search_results_into_sources(
     assert "answer" not in state  # compose_answer still has to run on these sources
 
 
+def test_narrative_path_searches_with_the_rewritten_query_when_there_is_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The classifier's search phrase, not the raw question, goes to search()."""
+    monkeypatch.setattr(agent, "DB_PATH", str(_confluence_db(tmp_path)))
+    seen: list[str] = []
+
+    def fake_search(query: str, doc_type: str) -> list[Any]:
+        seen.append(query)
+        return [_fake_result()]
+
+    monkeypatch.setattr(agent, "search", fake_search)
+
+    agent.narrative_path(
+        {
+            "question": "How are code reviews done?",
+            "doc_type": "decision_log",
+            "search_query": "pull request review and approval process",
+        }
+    )
+    agent.narrative_path({"question": "How are code reviews done?", "doc_type": "decision_log"})
+
+    assert seen == ["pull request review and approval process", "How are code reviews done?"]
+
+
 def test_narrative_path_falls_back_to_the_doc_id_when_the_page_is_unknown(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
