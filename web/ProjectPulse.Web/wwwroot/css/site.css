@@ -20,3 +20,14 @@ html {
 body {
   margin-bottom: 60px;
 }
+/* Chat screen (AGENTS-67) */
+.chat-header { margin: 1.5rem 0 1rem; }
+.chat-messages { list-style: none; padding: 0; margin: 0 0 1rem; min-height: 40vh; display: flex; flex-direction: column; gap: .75rem; }
+.chat-empty { color: #6c757d; }
+.chat-empty .example { margin: 0 .5rem .5rem 0; text-align: left; }
+.chat-message { max-width: 80%; padding: .6rem .9rem; border-radius: .75rem; white-space: pre-wrap; }
+.chat-user { align-self: flex-end; background: #0d6efd; color: #fff; }
+.chat-assistant { align-self: flex-start; background: #f1f3f5; color: #212529; }
+.chat-form { display: flex; gap: .5rem; align-items: flex-end; position: sticky; bottom: 0; background: #fff; padding: .5rem 0 1rem; }
+.chat-form textarea { resize: none; }
+.chat-error { background: #f8d7da; color: #842029; }

@@ -1,18 +1,37 @@
 @page
 @model IndexModel
 @{
-    ViewData["Title"] = "Home";
+    ViewData["Title"] = "Ask";
 }
 
-<h1 class="mt-4">ProjectPulse</h1>
-<p class="lead">Ask questions about your project. Numbers come from Jira and GitHub data; reasons come from your Confluence documents.</p>
+<div class="chat-header">
+    <h1 class="h3 mb-1">ProjectPulse</h1>
+    <p class="text-muted mb-0">Ask about sprints, pull requests and project decisions. Numbers come from Jira and GitHub data; reasons come from your documents.</p>
+    @if (Model.Health is not null)
+    {
+        <span class="badge bg-success mt-2">API connected, version @Model.Health.Version</span>
+    }
+    else
+    {
+        <span class="badge bg-danger mt-2" title="@Model.ErrorMessage">API not reachable</span>
+    }
+</div>
 
-<h2 class="h5 mt-4">API status</h2>
-@if (Model.Health is not null)
-{
-    <p class="text-success">Connected. Status: <strong>@Model.Health.Status</strong>, version <strong>@Model.Health.Version</strong>.</p>
-}
-else
-{
-    <p class="text-danger">@Model.ErrorMessage</p>
+<ul id="messages" class="chat-messages" aria-live="polite">
+    <li id="empty-state" class="chat-empty">
+        <p class="mb-2">Try a question:</p>
+        <button type="button" class="btn btn-outline-secondary btn-sm example">What was the velocity of each sprint?</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm example">Which sprints committed more than they delivered, and why?</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm example">Were any pull requests merged without a review, and what does our decision log say about reviews?</button>
+    </li>
+</ul>
+
+<form id="chat-form" class="chat-form" autocomplete="off">
+    @Html.AntiForgeryToken()
+    <textarea id="question" class="form-control" rows="2" maxlength="1000" placeholder="Type your question and press Enter" required></textarea>
+    <button type="submit" class="btn btn-primary">Send</button>
+</form>
+
+@section Scripts {
+    <script src="~/js/chat.js" asp-append-version="true"></script>
 }

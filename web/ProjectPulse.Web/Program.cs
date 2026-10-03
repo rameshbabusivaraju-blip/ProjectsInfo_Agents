@@ -12,6 +12,14 @@ builder.Services.AddHttpClient<ProjectPulseClient>(client =>
 {
     client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
     client.Timeout = TimeSpan.FromSeconds(90);
+
+    // The API needs this key on /ask and /files (AGENTS-53). It comes from user secrets or
+    // the ProjectPulseApi__ApiKey environment variable, never from a file in the repo.
+    var apiKey = builder.Configuration["ProjectPulseApi:ApiKey"];
+    if (!string.IsNullOrWhiteSpace(apiKey))
+    {
+        client.DefaultRequestHeaders.Add("X-API-Key", apiKey);
+    }
 });
 
 var app = builder.Build();
