@@ -1,0 +1,18 @@
+@page
+@model IndexModel
+@{
+    ViewData["Title"] = "Home";
+}
+
+<h1 class="mt-4">ProjectPulse</h1>
+<p class="lead">Ask questions about your project. Numbers come from Jira and GitHub data; reasons come from your Confluence documents.</p>
+
+<h2 class="h5 mt-4">API status</h2>
+@if (Model.Health is not null)
+{
+    <p class="text-success">Connected. Status: <strong>@Model.Health.Status</strong>, version <strong>@Model.Health.Version</strong>.</p>
+}
+else
+{
+    <p class="text-danger">@Model.ErrorMessage</p>
+}

@@ -39,3 +39,6 @@ Thumbs.db
 # Spikes — throwaway exploration, never committed
 spike_*.py
 spike_out.txt
+# ASP.NET build output
+web/**/bin/
+web/**/obj/
