@@ -30,14 +30,21 @@ from pydantic import BaseModel, Field
  
 from app.excel_export import export_to_excel
 from app.github_connector import (
+    COMMITS_FOR_TICKET_SQL,
+    COMMITS_WITHOUT_TICKET_SQL,
+    LONG_OPEN_PRS_SQL,
     LONGEST_REVIEW_WAIT_SQL,
+    NON_CONVENTION_BRANCHES_SQL,
     REVIEW_TURNAROUND_SQL,
+    TICKET_PATTERN,
     UNREVIEWED_PRS_SQL,
 )
 from app.jira_connector import (
     COMMITTED_VS_DELIVERED_SQL,
     LOGGED_VS_PLANNED_HOURS_SQL,
+    OPEN_CONNECTORS_STORIES_SQL,
     RE_ESTIMATED_STORIES_SQL,
+    SPILLED_OVER_TICKETS_SQL,
     VELOCITY_SQL,
 )
 from app.llm.provider import get_llm
@@ -53,6 +60,7 @@ class AgentState(TypedDict, total=False):
     metric_key: str
     doc_type: str
     hybrid_metric_key: str
+    ticket_key: str
     search_query: str
     rows: list[dict[str, Any]]
     sources: list[dict[str, Any]]
@@ -68,8 +76,10 @@ class Classification(BaseModel):
 
     metric_key: Literal[
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
-        "review_turnaround", "longest_review_wait", "unreviewed_prs", "export_excel",
-        "narrative", "hybrid", "other",
+        "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
+        "commits_for_ticket", "commits_without_ticket", "non_convention_branches",
+        "open_connectors_stories", "spilled_over_tickets",
+        "export_excel", "narrative", "hybrid", "other",
     ] = Field(
         description="Which known query answers the question, 'narrative' if it is answered by "
         "searching the project's own documents rather than a database query, 'hybrid' if it "
@@ -94,11 +104,19 @@ class Classification(BaseModel):
     )
     hybrid_metric_key: Literal[
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
-        "review_turnaround", "longest_review_wait", "unreviewed_prs",
+        "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
+        "commits_for_ticket", "commits_without_ticket", "non_convention_branches",
+        "open_connectors_stories", "spilled_over_tickets",
     ] | None = Field(
         default=None,
         description="Which metric query supplies the number half of a hybrid answer. Only set "
-        "when metric_key is 'hybrid'. Any of the seven metric queries can be used.",
+        "when metric_key is 'hybrid'. Any metric query can be used.",
+    )
+    ticket_key: str | None = Field(
+        default=None,
+        description="Set when the question names one ticket, such as 'AGENTS-14', 'AGENTS 14' or "
+        "'ticket 14'. Always write it as AGENTS-14. Needed when metric_key is "
+        "'commits_for_ticket' (or hybrid_metric_key is).",
     )
 
 _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
@@ -111,6 +129,16 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "review_turnaround = average pull request review turnaround time\n"
      "longest_review_wait = the single longest time a pull request waited for its first review\n"
      "unreviewed_prs = pull requests merged without a review\n"
+     "long_open_prs = pull requests that were open for more than three days, whether they are "
+     "still open or were merged or closed after that long\n"
+     "commits_for_ticket = the commits that belong to one named ticket -- when you pick this, "
+     "also set ticket_key, written like AGENTS-14\n"
+     "commits_without_ticket = how many commits went in without a ticket ID in the message\n"
+     "non_convention_branches = which pull request branches do not follow the "
+     "AGENTS-<n>-description naming convention\n"
+     "open_connectors_stories = how many stories (tickets) are still open under the "
+     "Connectors epic\n"
+     "spilled_over_tickets = which tickets spilled over, moving from one sprint into the next\n"
      "export_excel = write the last sprint's velocity to an Excel file\n"
      "narrative = answered by searching the project's own documents, not a database query -- "
      "when you pick this, also set doc_type to whichever of charter, decision_log, general, "
@@ -134,9 +162,20 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "hybrid = needs both a database number and a document search in the same answer -- when "
      "you pick this, set doc_type as above AND hybrid_metric_key to whichever of velocity, "
      "committed_vs_delivered, logged_vs_planned_hours, re_estimated_stories, "
-     "review_turnaround, longest_review_wait, unreviewed_prs supplies the number"),
+     "review_turnaround, longest_review_wait, unreviewed_prs, long_open_prs, "
+     "commits_for_ticket, commits_without_ticket, non_convention_branches, "
+     "open_connectors_stories, spilled_over_tickets supplies the number"),
     ("human", "{question}"),
 ])
+
+
+def _clean_ticket_key(value: str | None) -> str | None:
+    """Turn the model's ticket reference into the stored form, AGENTS-14, or None if it has none.
+
+    Reuses the connector's own pattern, so "AGENTS 14" and "agents-14" both give AGENTS-14.
+    """
+    match = TICKET_PATTERN.search(value or "")
+    return f"AGENTS-{match.group(1)}" if match else None
 
 
 def classify_intent(state: AgentState) -> AgentState:
@@ -144,6 +183,9 @@ def classify_intent(state: AgentState) -> AgentState:
     chain = _CLASSIFY_PROMPT | get_llm("fast").with_structured_output(Classification)
     result = chain.invoke({"question": state["question"]})
     state["metric_key"] = result.metric_key
+    ticket_key = _clean_ticket_key(result.ticket_key)
+    if ticket_key:
+        state["ticket_key"] = ticket_key
     if result.doc_type:
         state["doc_type"] = result.doc_type
     if result.search_query:
@@ -174,13 +216,21 @@ _QUERY_MAP = {
     "review_turnaround": REVIEW_TURNAROUND_SQL,
     "longest_review_wait": LONGEST_REVIEW_WAIT_SQL,
     "unreviewed_prs": UNREVIEWED_PRS_SQL,
+    "long_open_prs": LONG_OPEN_PRS_SQL,
+    "commits_for_ticket": COMMITS_FOR_TICKET_SQL,
+    "commits_without_ticket": COMMITS_WITHOUT_TICKET_SQL,
+    "non_convention_branches": NON_CONVENTION_BRANCHES_SQL,
+    "open_connectors_stories": OPEN_CONNECTORS_STORIES_SQL,
+    "spilled_over_tickets": SPILLED_OVER_TICKETS_SQL,
 }
  
 def metric_path(state: AgentState) -> AgentState:
     """Run the SQL for the classified metric and store the rows. No model call."""
     sql = _QUERY_MAP[state["metric_key"]]
     with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(sql)
+        # The ticket key goes in as a value, never pasted into the SQL text, so it cannot
+        # change what the query does. Queries with no :ticket_key placeholder ignore it.
+        cur = conn.execute(sql, {"ticket_key": state.get("ticket_key")})
         cols = [d[0] for d in cur.description]
         state["rows"] = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
     return state
@@ -260,7 +310,11 @@ def hybrid_path(state: AgentState) -> AgentState:
     this document" as two parts, and compose_answer can name the document.
     """
     question, doc_type = state["question"], state["doc_type"]
-    metric_rows = metric_path({"metric_key": state["hybrid_metric_key"]})["rows"]
+    metric_state: AgentState = {"metric_key": state["hybrid_metric_key"]}
+    # A hybrid answer built on commits_for_ticket needs the ticket key the classifier found.
+    if "ticket_key" in state:
+        metric_state["ticket_key"] = state["ticket_key"]
+    metric_rows = metric_path(metric_state)["rows"]
     narrative_state = narrative_path(
         {"question": question, "doc_type": doc_type, "search_query": state.get("search_query", "")}
     )
@@ -275,7 +329,10 @@ def refuse_path(state: AgentState) -> AgentState:
     state["answer"] = (
         "I can answer sprint velocity, committed versus delivered points, logged versus "
         "planned hours, re-estimated stories, PR review turnaround, the longest PR review "
-        "wait, PRs merged without review, export the last sprint's velocity to Excel, "
+        "wait, PRs merged without review, PRs open for more than three days, "
+        "the commits for one ticket, how many commits have no ticket ID, "
+        "branches that break the naming convention, open tickets under the Connectors epic, "
+        "tickets that spilled over between sprints, export the last sprint's velocity to Excel, "
         "questions answered by the project's own documents, or questions that combine a "
         "number with the project's own documents. This question doesn't match any of those."
     )

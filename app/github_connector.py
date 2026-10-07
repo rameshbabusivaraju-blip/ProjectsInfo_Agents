@@ -223,6 +223,62 @@ LEFT JOIN pr_reviews r ON r.pr_number = p.number
 WHERE p.merged_at IS NOT NULL AND r.id IS NULL
 """
 
+# Question C2: pull requests that were open for more than three days.
+#
+# "Open" runs from creation to the merge, to the close, or to now if the pull
+# request is still open. So a PR that took four days to merge counts, and so does
+# one that is still waiting. COALESCE takes the first end time that exists, and
+# 'now' is SQLite's current time. julianday turns a timestamp into a number of days.
+LONG_OPEN_PRS_SQL = """
+SELECT number, title, state,
+       ROUND(julianday(COALESCE(merged_at, closed_at, 'now')) - julianday(created_at), 1)
+           AS days_open
+FROM pull_requests
+WHERE julianday(COALESCE(merged_at, closed_at, 'now')) - julianday(created_at) > 3
+ORDER BY days_open DESC, number
+"""
+
+# Question C3: the commits that belong to one ticket.
+#
+# :ticket_key is a placeholder. SQLite is given the value separately from the SQL
+# text, so a ticket key can never change what the query does. Only the first line
+# of each message is returned; the rest is detail and trailers. substr(sha, 1, 7)
+# is the short form of the commit id.
+COMMITS_FOR_TICKET_SQL = """
+SELECT substr(sha, 1, 7) AS sha,
+       substr(message, 1, instr(message || char(10), char(10)) - 1) AS subject,
+       author_login, authored_at
+FROM commits
+WHERE ticket_key = :ticket_key
+ORDER BY authored_at
+"""
+
+# Question C5: how many commits went in without a ticket ID in the message.
+#
+# ticket_key is NULL when the message had no AGENTS-nn (ADR-016). In SQLite the test
+# "ticket_key IS NULL" is 1 when true and 0 when false, so SUM counts the commits that
+# have no ticket. COALESCE turns the empty-table result (NULL) into 0. One row always
+# comes back, so "none" shows as 0 rather than as an empty answer.
+COMMITS_WITHOUT_TICKET_SQL = """
+SELECT COALESCE(SUM(ticket_key IS NULL), 0) AS commits_without_ticket,
+       COUNT(*) AS total_commits
+FROM commits
+"""
+
+# Question J3: pull requests whose branch does not follow AGENTS-<n>-description (ADR-016).
+#
+# GLOB is a pattern match that, unlike LIKE, cares about upper and lower case. In the
+# pattern, [0-9] is one digit and * is any text. So 'AGENTS-[0-9]*-*' accepts
+# AGENTS-58-fix-thing and rejects agents-58-fix, AGENTS-abc-x and AGENTS-58 (no
+# description). Limit: only the first character after "AGENTS-" is checked, so
+# AGENTS-5x-y still passes. Only branches that had a pull request are in the data.
+NON_CONVENTION_BRANCHES_SQL = """
+SELECT number, title, head_branch
+FROM pull_requests
+WHERE head_branch NOT GLOB 'AGENTS-[0-9]*-*'
+ORDER BY number
+"""
+
 
 def report() -> None:
     """Print the two source-control answers this data now supports."""

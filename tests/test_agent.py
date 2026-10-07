@@ -620,7 +620,7 @@ def test_hybrid_path_still_answers_when_no_document_matches(
 
 
 def test_classification_accepts_every_metric_for_a_hybrid_answer() -> None:
-    """Each of the seven metric queries must be allowed as the number half of a hybrid answer."""
+    """Each metric query must be allowed as the number half of a hybrid answer."""
     for key in agent._QUERY_MAP:
         agent.Classification.model_validate(
             {"metric_key": "hybrid", "doc_type": "retro", "hybrid_metric_key": key}
