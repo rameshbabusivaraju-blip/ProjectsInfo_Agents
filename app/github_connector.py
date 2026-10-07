@@ -265,6 +265,20 @@ SELECT COALESCE(SUM(ticket_key IS NULL), 0) AS commits_without_ticket,
 FROM commits
 """
 
+# Question J3: pull requests whose branch does not follow AGENTS-<n>-description (ADR-016).
+#
+# GLOB is a pattern match that, unlike LIKE, cares about upper and lower case. In the
+# pattern, [0-9] is one digit and * is any text. So 'AGENTS-[0-9]*-*' accepts
+# AGENTS-58-fix-thing and rejects agents-58-fix, AGENTS-abc-x and AGENTS-58 (no
+# description). Limit: only the first character after "AGENTS-" is checked, so
+# AGENTS-5x-y still passes. Only branches that had a pull request are in the data.
+NON_CONVENTION_BRANCHES_SQL = """
+SELECT number, title, head_branch
+FROM pull_requests
+WHERE head_branch NOT GLOB 'AGENTS-[0-9]*-*'
+ORDER BY number
+"""
+
 
 def report() -> None:
     """Print the two source-control answers this data now supports."""

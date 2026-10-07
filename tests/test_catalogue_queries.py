@@ -19,6 +19,7 @@ from app.github_connector import (
     COMMITS_FOR_TICKET_SQL,
     COMMITS_WITHOUT_TICKET_SQL,
     LONG_OPEN_PRS_SQL,
+    NON_CONVENTION_BRANCHES_SQL,
 )
 from app.models import Commit, PullRequest
 
@@ -302,3 +303,55 @@ def test_refuse_path_names_the_commits_without_ticket_question() -> None:
     state = agent.refuse_path({"question": "what is the weather"})
 
     assert "how many commits have no ticket ID" in state["answer"]
+
+
+# ---------------------------------------------------------------------------
+# AGENTS-58 — J3: branches that do not follow AGENTS-<n>-description
+# ---------------------------------------------------------------------------
+
+
+def test_query_map_non_convention_branches_uses_non_convention_branches_sql() -> None:
+    """non_convention_branches must run github_connector's own NON_CONVENTION_BRANCHES_SQL."""
+    assert agent._QUERY_MAP["non_convention_branches"] is NON_CONVENTION_BRANCHES_SQL
+
+
+def test_metric_path_runs_non_convention_branches_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only branches that break AGENTS-<n>-description come back, in PR order."""
+    branches = {
+        1: "AGENTS-58-fix-thing",  # follows the convention
+        2: "fix-typo",  # no ticket prefix
+        3: "agents-6-lowercase",  # wrong case
+        4: "AGENTS-7",  # no description
+        5: "AGENTS-abc-x",  # not a number
+        6: "AGENTS-55-60-catalogue-queries",  # several ticket ids still follow it
+    }
+    with _new_db(tmp_path, monkeypatch) as session:
+        for number, branch in branches.items():
+            session.add(
+                PullRequest(
+                    number=number,
+                    title=f"PR {number}",
+                    state="closed",
+                    created_at=datetime(2026, 1, 1),
+                    head_branch=branch,
+                )
+            )
+        session.commit()
+
+    state = agent.metric_path({"metric_key": "non_convention_branches"})
+
+    assert state["rows"] == [
+        {"number": 2, "title": "PR 2", "head_branch": "fix-typo"},
+        {"number": 3, "title": "PR 3", "head_branch": "agents-6-lowercase"},
+        {"number": 4, "title": "PR 4", "head_branch": "AGENTS-7"},
+        {"number": 5, "title": "PR 5", "head_branch": "AGENTS-abc-x"},
+    ]
+
+
+def test_refuse_path_names_the_naming_convention_question() -> None:
+    """The refusal text must list the new question so a user knows it can be asked."""
+    state = agent.refuse_path({"question": "what is the weather"})
+
+    assert "branches that break the naming convention" in state["answer"]

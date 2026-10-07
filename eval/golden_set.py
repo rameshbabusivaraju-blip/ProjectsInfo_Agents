@@ -29,6 +29,7 @@ from app.github_connector import (
     COMMITS_FOR_TICKET_SQL,
     COMMITS_WITHOUT_TICKET_SQL,
     LONG_OPEN_PRS_SQL,
+    NON_CONVENTION_BRANCHES_SQL,
     REVIEW_TURNAROUND_SQL,
     UNREVIEWED_PRS_SQL,
 )
@@ -91,5 +92,11 @@ GOLDEN_SET: list[GoldenQuestion] = [
         question="How many commits went in without a ticket ID in the message?",
         metric_key="commits_without_ticket",
         reference_sql=COMMITS_WITHOUT_TICKET_SQL,
+    ),
+    GoldenQuestion(
+        id="J3",
+        question="Which branches do not follow the AGENTS-<n>-description convention?",
+        metric_key="non_convention_branches",
+        reference_sql=NON_CONVENTION_BRANCHES_SQL,
     ),
 ]
