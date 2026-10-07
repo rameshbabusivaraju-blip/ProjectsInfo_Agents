@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.github_connector import REVIEW_TURNAROUND_SQL, UNREVIEWED_PRS_SQL
+from app.github_connector import LONG_OPEN_PRS_SQL, REVIEW_TURNAROUND_SQL, UNREVIEWED_PRS_SQL
 from app.jira_connector import VELOCITY_SQL
 
 
@@ -62,5 +62,11 @@ GOLDEN_SET: list[GoldenQuestion] = [
         question="Which pull requests were merged without a review comment?",
         metric_key="unreviewed_prs",
         reference_sql=UNREVIEWED_PRS_SQL,
+    ),
+    GoldenQuestion(
+        id="C2",
+        question="Which pull requests were open for more than three days?",
+        metric_key="long_open_prs",
+        reference_sql=LONG_OPEN_PRS_SQL,
     ),
 ]

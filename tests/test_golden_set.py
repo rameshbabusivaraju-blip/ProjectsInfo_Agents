@@ -9,9 +9,9 @@ from app import agent
 from eval.golden_set import GOLDEN_SET
 
 
-def test_golden_set_covers_exactly_the_starred_metric_questions() -> None:
-    """AGENTS-32 is metric-only: A1, C1, J1 — no more, no fewer, until AGENTS-30's queries grow."""
-    assert {q.id for q in GOLDEN_SET} == {"A1", "C1", "J1"}
+def test_golden_set_covers_exactly_the_listed_metric_questions() -> None:
+    """A1, C1, J1 from AGENTS-32 plus each catalogue question added since — no more, no fewer."""
+    assert {q.id for q in GOLDEN_SET} == {"A1", "C1", "J1", "C2"}
 
 
 def test_every_metric_key_is_known_to_the_agent() -> None:

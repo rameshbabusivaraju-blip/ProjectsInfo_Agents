@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field
  
 from app.excel_export import export_to_excel
 from app.github_connector import (
+    LONG_OPEN_PRS_SQL,
     LONGEST_REVIEW_WAIT_SQL,
     REVIEW_TURNAROUND_SQL,
     UNREVIEWED_PRS_SQL,
@@ -68,8 +69,8 @@ class Classification(BaseModel):
 
     metric_key: Literal[
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
-        "review_turnaround", "longest_review_wait", "unreviewed_prs", "export_excel",
-        "narrative", "hybrid", "other",
+        "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
+        "export_excel", "narrative", "hybrid", "other",
     ] = Field(
         description="Which known query answers the question, 'narrative' if it is answered by "
         "searching the project's own documents rather than a database query, 'hybrid' if it "
@@ -94,11 +95,11 @@ class Classification(BaseModel):
     )
     hybrid_metric_key: Literal[
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
-        "review_turnaround", "longest_review_wait", "unreviewed_prs",
+        "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
     ] | None = Field(
         default=None,
         description="Which metric query supplies the number half of a hybrid answer. Only set "
-        "when metric_key is 'hybrid'. Any of the seven metric queries can be used.",
+        "when metric_key is 'hybrid'. Any metric query can be used.",
     )
 
 _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
@@ -111,6 +112,8 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "review_turnaround = average pull request review turnaround time\n"
      "longest_review_wait = the single longest time a pull request waited for its first review\n"
      "unreviewed_prs = pull requests merged without a review\n"
+     "long_open_prs = pull requests that were open for more than three days, whether they are "
+     "still open or were merged or closed after that long\n"
      "export_excel = write the last sprint's velocity to an Excel file\n"
      "narrative = answered by searching the project's own documents, not a database query -- "
      "when you pick this, also set doc_type to whichever of charter, decision_log, general, "
@@ -134,7 +137,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "hybrid = needs both a database number and a document search in the same answer -- when "
      "you pick this, set doc_type as above AND hybrid_metric_key to whichever of velocity, "
      "committed_vs_delivered, logged_vs_planned_hours, re_estimated_stories, "
-     "review_turnaround, longest_review_wait, unreviewed_prs supplies the number"),
+     "review_turnaround, longest_review_wait, unreviewed_prs, long_open_prs supplies the number"),
     ("human", "{question}"),
 ])
 
@@ -174,6 +177,7 @@ _QUERY_MAP = {
     "review_turnaround": REVIEW_TURNAROUND_SQL,
     "longest_review_wait": LONGEST_REVIEW_WAIT_SQL,
     "unreviewed_prs": UNREVIEWED_PRS_SQL,
+    "long_open_prs": LONG_OPEN_PRS_SQL,
 }
  
 def metric_path(state: AgentState) -> AgentState:
@@ -275,7 +279,8 @@ def refuse_path(state: AgentState) -> AgentState:
     state["answer"] = (
         "I can answer sprint velocity, committed versus delivered points, logged versus "
         "planned hours, re-estimated stories, PR review turnaround, the longest PR review "
-        "wait, PRs merged without review, export the last sprint's velocity to Excel, "
+        "wait, PRs merged without review, PRs open for more than three days, "
+        "export the last sprint's velocity to Excel, "
         "questions answered by the project's own documents, or questions that combine a "
         "number with the project's own documents. This question doesn't match any of those."
     )

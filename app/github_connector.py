@@ -223,6 +223,21 @@ LEFT JOIN pr_reviews r ON r.pr_number = p.number
 WHERE p.merged_at IS NOT NULL AND r.id IS NULL
 """
 
+# Question C2: pull requests that were open for more than three days.
+#
+# "Open" runs from creation to the merge, to the close, or to now if the pull
+# request is still open. So a PR that took four days to merge counts, and so does
+# one that is still waiting. COALESCE takes the first end time that exists, and
+# 'now' is SQLite's current time. julianday turns a timestamp into a number of days.
+LONG_OPEN_PRS_SQL = """
+SELECT number, title, state,
+       ROUND(julianday(COALESCE(merged_at, closed_at, 'now')) - julianday(created_at), 1)
+           AS days_open
+FROM pull_requests
+WHERE julianday(COALESCE(merged_at, closed_at, 'now')) - julianday(created_at) > 3
+ORDER BY days_open DESC, number
+"""
+
 
 def report() -> None:
     """Print the two source-control answers this data now supports."""
