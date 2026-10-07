@@ -7,13 +7,16 @@ return the right rows. Fully offline: no Jira, GitHub or model call.
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
+from langchain_core.runnables import RunnableLambda
+from pydantic import BaseModel
 from sqlmodel import Session, SQLModel, create_engine
 
 from app import agent
-from app.github_connector import LONG_OPEN_PRS_SQL
-from app.models import PullRequest
+from app.github_connector import COMMITS_FOR_TICKET_SQL, LONG_OPEN_PRS_SQL
+from app.models import Commit, PullRequest
 
 
 def _new_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Session:
@@ -79,3 +82,175 @@ def test_refuse_path_names_prs_open_for_more_than_three_days() -> None:
     state = agent.refuse_path({"question": "what is the weather"})
 
     assert "PRs open for more than three days" in state["answer"]
+
+
+# ---------------------------------------------------------------------------
+# AGENTS-56 — C3: commits for one ticket (the first query that takes a value)
+# ---------------------------------------------------------------------------
+
+
+class _FakeModel:
+    """Stands in for a chat model: with_structured_output gives back one fixed classification."""
+
+    def __init__(self, result: agent.Classification) -> None:
+        """Remember the classification this fake model will always return."""
+        self._result = result
+
+    def with_structured_output(
+        self, schema: type[BaseModel]
+    ) -> RunnableLambda[Any, agent.Classification]:
+        """Return a runnable that ignores its input and answers with the fixed classification."""
+
+        def fixed(_: Any) -> agent.Classification:
+            return self._result
+
+        return RunnableLambda(fixed)
+
+
+def _commit(letter: str, message: str, ticket_key: str | None, day: int) -> Commit:
+    """A commit whose 40-character id is one repeated letter, made on the given January day."""
+    return Commit(
+        sha=letter * 40,
+        message=message,
+        author_login="dev",
+        authored_at=datetime(2026, 1, day),
+        ticket_key=ticket_key,
+    )
+
+
+def test_query_map_commits_for_ticket_uses_commits_for_ticket_sql() -> None:
+    """commits_for_ticket must run github_connector's own COMMITS_FOR_TICKET_SQL."""
+    assert agent._QUERY_MAP["commits_for_ticket"] is COMMITS_FOR_TICKET_SQL
+
+
+def test_metric_path_runs_commits_for_ticket_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only the named ticket's commits come back, oldest first, with one line of message."""
+    with _new_db(tmp_path, monkeypatch) as session:
+        session.add(_commit("a", "AGENTS-14 add thing\n\nCo-Authored-By: someone", "AGENTS-14", 2))
+        session.add(_commit("b", "AGENTS-14 fix thing", "AGENTS-14", 1))
+        session.add(_commit("c", "AGENTS-15 other work", "AGENTS-15", 3))
+        session.commit()
+
+    state = agent.metric_path({"metric_key": "commits_for_ticket", "ticket_key": "AGENTS-14"})
+
+    assert state["rows"] == [
+        {
+            "sha": "bbbbbbb",
+            "subject": "AGENTS-14 fix thing",
+            "author_login": "dev",
+            "authored_at": "2026-01-01 00:00:00.000000",
+        },
+        {
+            "sha": "aaaaaaa",
+            "subject": "AGENTS-14 add thing",
+            "author_login": "dev",
+            "authored_at": "2026-01-02 00:00:00.000000",
+        },
+    ]
+
+
+def test_metric_path_treats_the_ticket_key_as_a_value_not_as_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A ticket key shaped like SQL must match nothing, not change the query."""
+    with _new_db(tmp_path, monkeypatch) as session:
+        session.add(_commit("a", "AGENTS-14 add thing", "AGENTS-14", 1))
+        session.commit()
+
+    state = agent.metric_path(
+        {"metric_key": "commits_for_ticket", "ticket_key": "AGENTS-14' OR '1'='1"}
+    )
+
+    assert state["rows"] == []
+
+
+def test_metric_path_returns_no_rows_when_no_ticket_key_was_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A commits_for_ticket question with no ticket in it must return nothing, not every commit."""
+    with _new_db(tmp_path, monkeypatch) as session:
+        session.add(_commit("a", "AGENTS-14 add thing", "AGENTS-14", 1))
+        session.commit()
+
+    state = agent.metric_path({"metric_key": "commits_for_ticket"})
+
+    assert state["rows"] == []
+
+
+def test_metric_path_still_runs_queries_that_have_no_placeholder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Passing a ticket key to a query that does not use it must not break that query."""
+    with _new_db(tmp_path, monkeypatch):
+        pass
+
+    state = agent.metric_path({"metric_key": "long_open_prs", "ticket_key": "AGENTS-14"})
+
+    assert state["rows"] == []
+
+
+def test_clean_ticket_key_gives_the_stored_form() -> None:
+    """Spelling variations all become AGENTS-14; text with no ticket in it becomes None."""
+    assert agent._clean_ticket_key("AGENTS-14") == "AGENTS-14"
+    assert agent._clean_ticket_key("agents 14") == "AGENTS-14"
+    assert agent._clean_ticket_key("AGENTS14") == "AGENTS-14"
+    assert agent._clean_ticket_key("fourteen") is None
+    assert agent._clean_ticket_key("") is None
+    assert agent._clean_ticket_key(None) is None
+
+
+def test_classify_intent_stores_a_cleaned_ticket_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The model's ticket reference must reach the state in the stored form."""
+    result = agent.Classification(metric_key="commits_for_ticket", ticket_key="AGENTS 14")
+    monkeypatch.setattr(agent, "get_llm", lambda tier: _FakeModel(result))
+
+    state = agent.classify_intent({"question": "Which commits relate to AGENTS 14?"})
+
+    assert state["metric_key"] == "commits_for_ticket"
+    assert state["ticket_key"] == "AGENTS-14"
+
+
+def test_classify_intent_leaves_the_ticket_key_out_when_there_is_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A question that names no ticket must not put a ticket key in the state."""
+    result = agent.Classification(metric_key="velocity")
+    monkeypatch.setattr(agent, "get_llm", lambda tier: _FakeModel(result))
+
+    state = agent.classify_intent({"question": "What was the velocity of each sprint?"})
+
+    assert "ticket_key" not in state
+
+
+def test_hybrid_path_passes_the_ticket_key_to_the_metric_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hybrid answer built on commits_for_ticket must hand over the ticket key it found."""
+    seen: list[agent.AgentState] = []
+
+    def fake_metric_path(state: agent.AgentState) -> agent.AgentState:
+        seen.append(state)
+        return {"rows": []}
+
+    monkeypatch.setattr(agent, "metric_path", fake_metric_path)
+    monkeypatch.setattr(agent, "search", lambda question, doc_type: [])
+
+    agent.hybrid_path(
+        {
+            "question": "why so many commits on AGENTS-14",
+            "doc_type": "retro",
+            "hybrid_metric_key": "commits_for_ticket",
+            "ticket_key": "AGENTS-14",
+        }
+    )
+
+    assert seen == [{"metric_key": "commits_for_ticket", "ticket_key": "AGENTS-14"}]
+
+
+def test_refuse_path_names_the_commits_for_one_ticket_question() -> None:
+    """The refusal text must list the new question so a user knows it can be asked."""
+    state = agent.refuse_path({"question": "what is the weather"})
+
+    assert "the commits for one ticket" in state["answer"]

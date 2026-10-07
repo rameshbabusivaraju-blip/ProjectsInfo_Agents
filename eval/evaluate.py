@@ -22,10 +22,15 @@ from app.agent import DB_PATH, agent
 from eval.golden_set import GOLDEN_SET, GoldenQuestion
 
 
-def _run_reference_query(sql: str, db_path: str) -> list[dict[str, Any]]:
-    """Run a golden question's reference SQL against the given database."""
+def _run_reference_query(
+    sql: str, db_path: str, params: dict[str, str] | None = None
+) -> list[dict[str, Any]]:
+    """Run a golden question's reference SQL against the given database.
+
+    params gives the value for each :name placeholder in the SQL, if it has any.
+    """
     with sqlite3.connect(db_path) as conn:
-        cur = conn.execute(sql)
+        cur = conn.execute(sql, params or {})
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
 
@@ -60,7 +65,7 @@ def evaluate(golden_set: list[GoldenQuestion] = GOLDEN_SET) -> bool:
     results = []
     for question in golden_set:
         state = agent.invoke({"question": question.question})
-        expected_rows = _run_reference_query(question.reference_sql, DB_PATH)
+        expected_rows = _run_reference_query(question.reference_sql, DB_PATH, question.params)
         actual_rows = state.get("rows", [])
         passed = _rows_match(actual_rows, expected_rows)
         results.append(passed)

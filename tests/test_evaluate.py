@@ -76,3 +76,17 @@ def test_run_reference_query_returns_rows_from_db(tmp_path: Path) -> None:
     rows = _run_reference_query("SELECT name, points FROM t", str(db_path))
 
     assert rows == [{"name": "Sprint 1", "points": 5.0}]
+
+def test_run_reference_query_fills_a_placeholder_from_params(tmp_path: Path) -> None:
+    """A reference query with a :name placeholder must get its value from params (C3)."""
+    db_path = tmp_path / "test.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE t (ticket TEXT, n INTEGER)")
+        conn.execute("INSERT INTO t VALUES ('AGENTS-14', 1), ('AGENTS-15', 2)")
+        conn.commit()
+
+    rows = _run_reference_query(
+        "SELECT n FROM t WHERE ticket = :ticket_key", str(db_path), {"ticket_key": "AGENTS-14"}
+    )
+
+    assert rows == [{"n": 1}]

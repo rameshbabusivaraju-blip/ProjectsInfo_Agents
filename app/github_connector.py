@@ -238,6 +238,21 @@ WHERE julianday(COALESCE(merged_at, closed_at, 'now')) - julianday(created_at) >
 ORDER BY days_open DESC, number
 """
 
+# Question C3: the commits that belong to one ticket.
+#
+# :ticket_key is a placeholder. SQLite is given the value separately from the SQL
+# text, so a ticket key can never change what the query does. Only the first line
+# of each message is returned; the rest is detail and trailers. substr(sha, 1, 7)
+# is the short form of the commit id.
+COMMITS_FOR_TICKET_SQL = """
+SELECT substr(sha, 1, 7) AS sha,
+       substr(message, 1, instr(message || char(10), char(10)) - 1) AS subject,
+       author_login, authored_at
+FROM commits
+WHERE ticket_key = :ticket_key
+ORDER BY authored_at
+"""
+
 
 def report() -> None:
     """Print the two source-control answers this data now supports."""

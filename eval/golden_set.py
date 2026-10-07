@@ -23,9 +23,14 @@ use ADR-015's other mechanism, a frozen snapshot under eval/snapshot_<date>/
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from app.github_connector import LONG_OPEN_PRS_SQL, REVIEW_TURNAROUND_SQL, UNREVIEWED_PRS_SQL
+from app.github_connector import (
+    COMMITS_FOR_TICKET_SQL,
+    LONG_OPEN_PRS_SQL,
+    REVIEW_TURNAROUND_SQL,
+    UNREVIEWED_PRS_SQL,
+)
 from app.jira_connector import VELOCITY_SQL
 
 
@@ -36,12 +41,16 @@ class GoldenQuestion:
     metric_key must match a key in app.agent._QUERY_MAP. That is what lets
     evaluate.py (AGENTS-33) send `question` through the real agent and check
     its answer against reference_sql's result, without hardcoding SQL twice.
+
+    params holds the value for each :name placeholder in reference_sql, such as
+    the ticket key for C3. Most questions have none.
     """
 
     id: str
     question: str
     metric_key: str
     reference_sql: str
+    params: dict[str, str] = field(default_factory=dict)
 
 
 GOLDEN_SET: list[GoldenQuestion] = [
@@ -68,5 +77,12 @@ GOLDEN_SET: list[GoldenQuestion] = [
         question="Which pull requests were open for more than three days?",
         metric_key="long_open_prs",
         reference_sql=LONG_OPEN_PRS_SQL,
+    ),
+    GoldenQuestion(
+        id="C3",
+        question="Which commits relate to AGENTS-14?",
+        metric_key="commits_for_ticket",
+        reference_sql=COMMITS_FOR_TICKET_SQL,
+        params={"ticket_key": "AGENTS-14"},
     ),
 ]
