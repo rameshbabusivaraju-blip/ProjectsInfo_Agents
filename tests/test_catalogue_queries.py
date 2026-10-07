@@ -15,7 +15,11 @@ from pydantic import BaseModel
 from sqlmodel import Session, SQLModel, create_engine
 
 from app import agent
-from app.github_connector import COMMITS_FOR_TICKET_SQL, LONG_OPEN_PRS_SQL
+from app.github_connector import (
+    COMMITS_FOR_TICKET_SQL,
+    COMMITS_WITHOUT_TICKET_SQL,
+    LONG_OPEN_PRS_SQL,
+)
 from app.models import Commit, PullRequest
 
 
@@ -254,3 +258,47 @@ def test_refuse_path_names_the_commits_for_one_ticket_question() -> None:
     state = agent.refuse_path({"question": "what is the weather"})
 
     assert "the commits for one ticket" in state["answer"]
+
+
+# ---------------------------------------------------------------------------
+# AGENTS-57 — C5: how many commits have no ticket ID
+# ---------------------------------------------------------------------------
+
+
+def test_query_map_commits_without_ticket_uses_commits_without_ticket_sql() -> None:
+    """commits_without_ticket must run github_connector's own COMMITS_WITHOUT_TICKET_SQL."""
+    assert agent._QUERY_MAP["commits_without_ticket"] is COMMITS_WITHOUT_TICKET_SQL
+
+
+def test_metric_path_runs_commits_without_ticket_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Commits with no ticket key are counted, next to the total number of commits."""
+    with _new_db(tmp_path, monkeypatch) as session:
+        session.add(_commit("a", "AGENTS-14 add thing", "AGENTS-14", 1))
+        session.add(_commit("b", "quick fix, no id", None, 2))
+        session.add(_commit("c", "another one with no id", None, 3))
+        session.commit()
+
+    state = agent.metric_path({"metric_key": "commits_without_ticket"})
+
+    assert state["rows"] == [{"commits_without_ticket": 2, "total_commits": 3}]
+
+
+def test_metric_path_counts_zero_commits_without_ticket_on_an_empty_table(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With no commits at all the answer is still one row of zeros, not an empty list."""
+    with _new_db(tmp_path, monkeypatch):
+        pass
+
+    state = agent.metric_path({"metric_key": "commits_without_ticket"})
+
+    assert state["rows"] == [{"commits_without_ticket": 0, "total_commits": 0}]
+
+
+def test_refuse_path_names_the_commits_without_ticket_question() -> None:
+    """The refusal text must list the new question so a user knows it can be asked."""
+    state = agent.refuse_path({"question": "what is the weather"})
+
+    assert "how many commits have no ticket ID" in state["answer"]

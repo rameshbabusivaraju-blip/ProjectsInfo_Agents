@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 
 from app.github_connector import (
     COMMITS_FOR_TICKET_SQL,
+    COMMITS_WITHOUT_TICKET_SQL,
     LONG_OPEN_PRS_SQL,
     REVIEW_TURNAROUND_SQL,
     UNREVIEWED_PRS_SQL,
@@ -84,5 +85,11 @@ GOLDEN_SET: list[GoldenQuestion] = [
         metric_key="commits_for_ticket",
         reference_sql=COMMITS_FOR_TICKET_SQL,
         params={"ticket_key": "AGENTS-14"},
+    ),
+    GoldenQuestion(
+        id="C5",
+        question="How many commits went in without a ticket ID in the message?",
+        metric_key="commits_without_ticket",
+        reference_sql=COMMITS_WITHOUT_TICKET_SQL,
     ),
 ]

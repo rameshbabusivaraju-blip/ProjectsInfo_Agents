@@ -253,6 +253,18 @@ WHERE ticket_key = :ticket_key
 ORDER BY authored_at
 """
 
+# Question C5: how many commits went in without a ticket ID in the message.
+#
+# ticket_key is NULL when the message had no AGENTS-nn (ADR-016). In SQLite the test
+# "ticket_key IS NULL" is 1 when true and 0 when false, so SUM counts the commits that
+# have no ticket. COALESCE turns the empty-table result (NULL) into 0. One row always
+# comes back, so "none" shows as 0 rather than as an empty answer.
+COMMITS_WITHOUT_TICKET_SQL = """
+SELECT COALESCE(SUM(ticket_key IS NULL), 0) AS commits_without_ticket,
+       COUNT(*) AS total_commits
+FROM commits
+"""
+
 
 def report() -> None:
     """Print the two source-control answers this data now supports."""

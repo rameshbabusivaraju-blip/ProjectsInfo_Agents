@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from app.excel_export import export_to_excel
 from app.github_connector import (
     COMMITS_FOR_TICKET_SQL,
+    COMMITS_WITHOUT_TICKET_SQL,
     LONG_OPEN_PRS_SQL,
     LONGEST_REVIEW_WAIT_SQL,
     REVIEW_TURNAROUND_SQL,
@@ -73,7 +74,8 @@ class Classification(BaseModel):
     metric_key: Literal[
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
         "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
-        "commits_for_ticket", "export_excel", "narrative", "hybrid", "other",
+        "commits_for_ticket", "commits_without_ticket",
+        "export_excel", "narrative", "hybrid", "other",
     ] = Field(
         description="Which known query answers the question, 'narrative' if it is answered by "
         "searching the project's own documents rather than a database query, 'hybrid' if it "
@@ -99,7 +101,7 @@ class Classification(BaseModel):
     hybrid_metric_key: Literal[
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
         "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
-        "commits_for_ticket",
+        "commits_for_ticket", "commits_without_ticket",
     ] | None = Field(
         default=None,
         description="Which metric query supplies the number half of a hybrid answer. Only set "
@@ -126,6 +128,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "still open or were merged or closed after that long\n"
      "commits_for_ticket = the commits that belong to one named ticket -- when you pick this, "
      "also set ticket_key, written like AGENTS-14\n"
+     "commits_without_ticket = how many commits went in without a ticket ID in the message\n"
      "export_excel = write the last sprint's velocity to an Excel file\n"
      "narrative = answered by searching the project's own documents, not a database query -- "
      "when you pick this, also set doc_type to whichever of charter, decision_log, general, "
@@ -150,7 +153,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "you pick this, set doc_type as above AND hybrid_metric_key to whichever of velocity, "
      "committed_vs_delivered, logged_vs_planned_hours, re_estimated_stories, "
      "review_turnaround, longest_review_wait, unreviewed_prs, long_open_prs, "
-     "commits_for_ticket supplies the number"),
+     "commits_for_ticket, commits_without_ticket supplies the number"),
     ("human", "{question}"),
 ])
 
@@ -204,6 +207,7 @@ _QUERY_MAP = {
     "unreviewed_prs": UNREVIEWED_PRS_SQL,
     "long_open_prs": LONG_OPEN_PRS_SQL,
     "commits_for_ticket": COMMITS_FOR_TICKET_SQL,
+    "commits_without_ticket": COMMITS_WITHOUT_TICKET_SQL,
 }
  
 def metric_path(state: AgentState) -> AgentState:
@@ -312,7 +316,8 @@ def refuse_path(state: AgentState) -> AgentState:
         "I can answer sprint velocity, committed versus delivered points, logged versus "
         "planned hours, re-estimated stories, PR review turnaround, the longest PR review "
         "wait, PRs merged without review, PRs open for more than three days, "
-        "the commits for one ticket, export the last sprint's velocity to Excel, "
+        "the commits for one ticket, how many commits have no ticket ID, "
+        "export the last sprint's velocity to Excel, "
         "questions answered by the project's own documents, or questions that combine a "
         "number with the project's own documents. This question doesn't match any of those."
     )
