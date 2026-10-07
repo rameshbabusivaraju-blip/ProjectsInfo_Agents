@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.actions_connector import DORA_PER_SPRINT_SQL, FAILED_RUNS_BY_STAGE_SQL
 from app.github_connector import (
     COMMITS_FOR_TICKET_SQL,
     COMMITS_WITHOUT_TICKET_SQL,
@@ -110,5 +111,17 @@ GOLDEN_SET: list[GoldenQuestion] = [
         question="Which items spilled over from one sprint into the next?",
         metric_key="spilled_over_tickets",
         reference_sql=SPILLED_OVER_TICKETS_SQL,
+    ),
+    GoldenQuestion(
+            id="D1",
+            question="Give me all four DORA metrics per sprint.",
+            metric_key="dora_per_sprint",
+            reference_sql=DORA_PER_SPRINT_SQL,
+    ),
+    GoldenQuestion(
+            id="D6",
+            question="How many pipeline runs failed this sprint, and at which stage?",
+            metric_key="failed_runs_by_stage",
+            reference_sql=FAILED_RUNS_BY_STAGE_SQL,
     ),
 ]

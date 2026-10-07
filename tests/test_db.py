@@ -23,4 +23,6 @@ def test_schema_creates_expected_tables() -> None:
         "pull_requests",
         "pr_reviews",
         "confluence_pages",
+        "pipeline_runs",
+        "pipeline_jobs",
     }

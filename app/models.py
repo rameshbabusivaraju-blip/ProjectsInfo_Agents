@@ -140,3 +140,35 @@ class ConfluencePage(SQLModel, table=True):
     version_author_id: str | None = Field(default=None, foreign_key="people.account_id")
     updated: datetime
     body_text: str | None = None
+
+class PipelineRun(SQLModel, table=True):
+    """One GitHub Actions workflow run (the CI workflow), from the Actions API."""
+
+    __tablename__ = "pipeline_runs"
+
+    id: int = Field(primary_key=True)
+    name: str
+    # push or pull_request. DORA only counts "push" runs on main (ADR-019).
+    event: str
+    head_branch: str | None = None
+    head_sha: str
+    # queued, in_progress or completed
+    status: str
+    # success, failure, cancelled or skipped. None while the run is still going.
+    conclusion: str | None = None
+    created_at: datetime
+    # For a finished run this is when it ended.
+    updated_at: datetime
+
+
+class PipelineJob(SQLModel, table=True):
+    """One job inside a run, such as test or deploy. The stage a failure happened in."""
+
+    __tablename__ = "pipeline_jobs"
+
+    id: int = Field(primary_key=True)
+    run_id: int = Field(foreign_key="pipeline_runs.id")
+    name: str
+    # success, failure, cancelled or skipped. None while the job is still going.
+    conclusion: str | None = None
+    completed_at: datetime | None = None

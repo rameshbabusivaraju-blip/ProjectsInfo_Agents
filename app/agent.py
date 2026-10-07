@@ -22,12 +22,13 @@ SQL or retrieval code, just combining what the other two paths already do.
 import sqlite3
 import sys
 from typing import Any, Literal, TypedDict
- 
+
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
- 
+
+from app.actions_connector import DORA_PER_SPRINT_SQL, FAILED_RUNS_BY_STAGE_SQL
 from app.excel_export import export_to_excel
 from app.github_connector import (
     COMMITS_FOR_TICKET_SQL,
@@ -80,6 +81,7 @@ class Classification(BaseModel):
         "commits_for_ticket", "commits_without_ticket", "non_convention_branches",
         "open_connectors_stories", "spilled_over_tickets",
         "export_excel", "narrative", "hybrid", "other",
+        "dora_per_sprint", "failed_runs_by_stage",
     ] = Field(
         description="Which known query answers the question, 'narrative' if it is answered by "
         "searching the project's own documents rather than a database query, 'hybrid' if it "
@@ -107,6 +109,7 @@ class Classification(BaseModel):
         "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
         "commits_for_ticket", "commits_without_ticket", "non_convention_branches",
         "open_connectors_stories", "spilled_over_tickets",
+        "dora_per_sprint", "failed_runs_by_stage",
     ] | None = Field(
         default=None,
         description="Which metric query supplies the number half of a hybrid answer. Only set "
@@ -139,6 +142,10 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "open_connectors_stories = how many stories (tickets) are still open under the "
      "Connectors epic\n"
      "spilled_over_tickets = which tickets spilled over, moving from one sprint into the next\n"
+     "dora_per_sprint = the four DORA metrics (deployment frequency, lead time, change failure "
+     "rate, MTTR) for each sprint, and their trends\n"
+     "failed_runs_by_stage = how many pipeline runs failed this sprint, and in which stage "
+     "(test or deploy)\n"
      "export_excel = write the last sprint's velocity to an Excel file\n"
      "narrative = answered by searching the project's own documents, not a database query -- "
      "when you pick this, also set doc_type to whichever of charter, decision_log, general, "
@@ -164,7 +171,8 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "committed_vs_delivered, logged_vs_planned_hours, re_estimated_stories, "
      "review_turnaround, longest_review_wait, unreviewed_prs, long_open_prs, "
      "commits_for_ticket, commits_without_ticket, non_convention_branches, "
-     "open_connectors_stories, spilled_over_tickets supplies the number"),
+     "open_connectors_stories, spilled_over_tickets, dora_per_sprint, "
+     "failed_runs_by_stage supplies the number"),
     ("human", "{question}"),
 ])
 
@@ -222,6 +230,8 @@ _QUERY_MAP = {
     "non_convention_branches": NON_CONVENTION_BRANCHES_SQL,
     "open_connectors_stories": OPEN_CONNECTORS_STORIES_SQL,
     "spilled_over_tickets": SPILLED_OVER_TICKETS_SQL,
+    "dora_per_sprint": DORA_PER_SPRINT_SQL,
+    "failed_runs_by_stage": FAILED_RUNS_BY_STAGE_SQL,
 }
  
 def metric_path(state: AgentState) -> AgentState:
@@ -332,7 +342,8 @@ def refuse_path(state: AgentState) -> AgentState:
         "wait, PRs merged without review, PRs open for more than three days, "
         "the commits for one ticket, how many commits have no ticket ID, "
         "branches that break the naming convention, open tickets under the Connectors epic, "
-        "tickets that spilled over between sprints, export the last sprint's velocity to Excel, "
+        "tickets that spilled over between sprints, the four DORA metrics per sprint, "
+        "failed pipeline runs by stage, export the last sprint's velocity to Excel, "
         "questions answered by the project's own documents, or questions that combine a "
         "number with the project's own documents. This question doesn't match any of those."
     )
