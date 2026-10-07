@@ -21,8 +21,8 @@ from app.github_connector import (
     LONG_OPEN_PRS_SQL,
     NON_CONVENTION_BRANCHES_SQL,
 )
-from app.jira_connector import OPEN_CONNECTORS_STORIES_SQL
-from app.models import Commit, PullRequest, Ticket
+from app.jira_connector import OPEN_CONNECTORS_STORIES_SQL, SPILLED_OVER_TICKETS_SQL
+from app.models import Commit, PullRequest, Sprint, Ticket, TicketSprint
 
 
 def _new_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Session:
@@ -423,3 +423,65 @@ def test_refuse_path_names_the_open_connectors_stories_question() -> None:
     state = agent.refuse_path({"question": "what is the weather"})
 
     assert "open tickets under the Connectors epic" in state["answer"]
+
+
+# ---------------------------------------------------------------------------
+# AGENTS-60 — A5: tickets that spilled over between sprints
+# ---------------------------------------------------------------------------
+
+
+def test_query_map_spilled_over_tickets_uses_spilled_over_tickets_sql() -> None:
+    """spilled_over_tickets must run jira_connector's own SPILLED_OVER_TICKETS_SQL."""
+    assert agent._QUERY_MAP["spilled_over_tickets"] is SPILLED_OVER_TICKETS_SQL
+
+
+def test_metric_path_runs_spilled_over_tickets_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A ticket in more than one sprint comes back with its sprints in the order it met them."""
+    with _new_db(tmp_path, monkeypatch) as session:
+        for sprint_id in (1, 2, 3):
+            session.add(
+                Sprint(
+                    id=sprint_id,
+                    name=f"Sprint {sprint_id}",
+                    state="closed",
+                    start_date=datetime(2026, 1, sprint_id),
+                )
+            )
+        session.add(_ticket("AGENTS-54", "Actions connector", "new"))
+        session.add(_ticket("AGENTS-24", "GitHub connector", "done"))
+        session.add(_ticket("AGENTS-23", "Jira connector", "done"))
+        # AGENTS-54 went through three sprints, saved out of order to prove position decides.
+        session.add(TicketSprint(ticket_key="AGENTS-54", sprint_id=3, position=2))
+        session.add(TicketSprint(ticket_key="AGENTS-54", sprint_id=1, position=0))
+        session.add(TicketSprint(ticket_key="AGENTS-54", sprint_id=2, position=1))
+        session.add(TicketSprint(ticket_key="AGENTS-24", sprint_id=1, position=0))
+        session.add(TicketSprint(ticket_key="AGENTS-24", sprint_id=2, position=1))
+        # AGENTS-23 stayed in one sprint, so it did not spill over.
+        session.add(TicketSprint(ticket_key="AGENTS-23", sprint_id=1, position=0))
+        session.commit()
+
+    state = agent.metric_path({"metric_key": "spilled_over_tickets"})
+
+    assert state["rows"] == [
+        {
+            "ticket": "AGENTS-54",
+            "summary": "Actions connector",
+            "sprint_count": 3,
+            "sprints": "Sprint 1, Sprint 2, Sprint 3",
+        },
+        {
+            "ticket": "AGENTS-24",
+            "summary": "GitHub connector",
+            "sprint_count": 2,
+            "sprints": "Sprint 1, Sprint 2",
+        },
+    ]
+
+
+def test_refuse_path_names_the_spilled_over_tickets_question() -> None:
+    """The refusal text must list the new question so a user knows it can be asked."""
+    state = agent.refuse_path({"question": "what is the weather"})
+
+    assert "tickets that spilled over between sprints" in state["answer"]

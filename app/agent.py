@@ -44,6 +44,7 @@ from app.jira_connector import (
     LOGGED_VS_PLANNED_HOURS_SQL,
     OPEN_CONNECTORS_STORIES_SQL,
     RE_ESTIMATED_STORIES_SQL,
+    SPILLED_OVER_TICKETS_SQL,
     VELOCITY_SQL,
 )
 from app.llm.provider import get_llm
@@ -77,7 +78,8 @@ class Classification(BaseModel):
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
         "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
         "commits_for_ticket", "commits_without_ticket", "non_convention_branches",
-        "open_connectors_stories", "export_excel", "narrative", "hybrid", "other",
+        "open_connectors_stories", "spilled_over_tickets",
+        "export_excel", "narrative", "hybrid", "other",
     ] = Field(
         description="Which known query answers the question, 'narrative' if it is answered by "
         "searching the project's own documents rather than a database query, 'hybrid' if it "
@@ -104,7 +106,7 @@ class Classification(BaseModel):
         "velocity", "committed_vs_delivered", "logged_vs_planned_hours", "re_estimated_stories",
         "review_turnaround", "longest_review_wait", "unreviewed_prs", "long_open_prs",
         "commits_for_ticket", "commits_without_ticket", "non_convention_branches",
-        "open_connectors_stories",
+        "open_connectors_stories", "spilled_over_tickets",
     ] | None = Field(
         default=None,
         description="Which metric query supplies the number half of a hybrid answer. Only set "
@@ -136,6 +138,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "AGENTS-<n>-description naming convention\n"
      "open_connectors_stories = how many stories (tickets) are still open under the "
      "Connectors epic\n"
+     "spilled_over_tickets = which tickets spilled over, moving from one sprint into the next\n"
      "export_excel = write the last sprint's velocity to an Excel file\n"
      "narrative = answered by searching the project's own documents, not a database query -- "
      "when you pick this, also set doc_type to whichever of charter, decision_log, general, "
@@ -161,7 +164,7 @@ _CLASSIFY_PROMPT = ChatPromptTemplate.from_messages([
      "committed_vs_delivered, logged_vs_planned_hours, re_estimated_stories, "
      "review_turnaround, longest_review_wait, unreviewed_prs, long_open_prs, "
      "commits_for_ticket, commits_without_ticket, non_convention_branches, "
-     "open_connectors_stories supplies the number"),
+     "open_connectors_stories, spilled_over_tickets supplies the number"),
     ("human", "{question}"),
 ])
 
@@ -218,6 +221,7 @@ _QUERY_MAP = {
     "commits_without_ticket": COMMITS_WITHOUT_TICKET_SQL,
     "non_convention_branches": NON_CONVENTION_BRANCHES_SQL,
     "open_connectors_stories": OPEN_CONNECTORS_STORIES_SQL,
+    "spilled_over_tickets": SPILLED_OVER_TICKETS_SQL,
 }
  
 def metric_path(state: AgentState) -> AgentState:
@@ -328,7 +332,7 @@ def refuse_path(state: AgentState) -> AgentState:
         "wait, PRs merged without review, PRs open for more than three days, "
         "the commits for one ticket, how many commits have no ticket ID, "
         "branches that break the naming convention, open tickets under the Connectors epic, "
-        "export the last sprint's velocity to Excel, "
+        "tickets that spilled over between sprints, export the last sprint's velocity to Excel, "
         "questions answered by the project's own documents, or questions that combine a "
         "number with the project's own documents. This question doesn't match any of those."
     )

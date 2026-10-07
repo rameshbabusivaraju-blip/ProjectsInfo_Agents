@@ -430,6 +430,24 @@ FROM (
 )
 """
 
+# Tickets that spilled over between sprints — catalogue question A5.
+#
+# ticket_sprints holds one row for every sprint a ticket was ever in, in order. A ticket
+# with more than one row moved from one sprint into another, which is a spill-over. The
+# inner SELECT sorts by position first, so GROUP_CONCAT lists the sprint names in the
+# order the ticket went through them. SQLite does not promise that order, but it keeps
+# the order of its input in practice.
+SPILLED_OVER_TICKETS_SQL = """
+SELECT t.key AS ticket, t.summary, COUNT(*) AS sprint_count,
+       GROUP_CONCAT(s.name, ', ') AS sprints
+FROM (SELECT ticket_key, sprint_id FROM ticket_sprints ORDER BY ticket_key, position) ts
+JOIN tickets t ON t.key = ts.ticket_key
+JOIN sprints s ON s.id = ts.sprint_id
+GROUP BY t.key
+HAVING COUNT(*) > 1
+ORDER BY sprint_count DESC, t.key
+"""
+
 def velocity() -> None:
     """Print points delivered per sprint — catalogue question A1."""
     with Session(engine) as session:

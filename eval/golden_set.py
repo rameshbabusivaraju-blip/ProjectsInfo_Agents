@@ -1,12 +1,12 @@
 """Golden question set — ADR-008/ADR-015, AGENTS-32.
 
-Metric-only for now: A1, C1, J1, the three catalogue questions the agent can
-already answer (AGENTS-29/30). Each entry reuses the exact SQL constant the
-agent itself runs for that metric_key, imported from the connector module
-that defines it — the same constant app.agent._QUERY_MAP points at, not a
+Metric-only for now: A1, C1, J1 (AGENTS-29/30) and the catalogue queries added in
+AGENTS-55 to AGENTS-60 (C2, C3, C5, J3, B1, A5). Each entry reuses the exact SQL
+constant the agent itself runs for that metric_key, imported from the connector
+module that defines it — the same constant app.agent._QUERY_MAP points at, not a
 copy of its text.
 
-That is a deliberate choice, not a shortcut. These three metrics each have
+That is a deliberate choice, not a shortcut. These metrics each have
 exactly one correct SQL shape — there is no second, differently-worded query
 that would check the first independently, so writing one would only
 duplicate the reviewed query, not verify it. What this golden set checks is
@@ -33,7 +33,7 @@ from app.github_connector import (
     REVIEW_TURNAROUND_SQL,
     UNREVIEWED_PRS_SQL,
 )
-from app.jira_connector import OPEN_CONNECTORS_STORIES_SQL, VELOCITY_SQL
+from app.jira_connector import OPEN_CONNECTORS_STORIES_SQL, SPILLED_OVER_TICKETS_SQL, VELOCITY_SQL
 
 
 @dataclass(frozen=True)
@@ -104,5 +104,11 @@ GOLDEN_SET: list[GoldenQuestion] = [
         question="How many stories are still open under the Connectors epic?",
         metric_key="open_connectors_stories",
         reference_sql=OPEN_CONNECTORS_STORIES_SQL,
+    ),
+    GoldenQuestion(
+        id="A5",
+        question="Which items spilled over from one sprint into the next?",
+        metric_key="spilled_over_tickets",
+        reference_sql=SPILLED_OVER_TICKETS_SQL,
     ),
 ]
