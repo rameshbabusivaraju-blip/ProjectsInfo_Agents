@@ -55,14 +55,14 @@ def test_fast_openai_uses_mini_model(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_strong_gemini_uses_pro_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """strong/gemini must pick gemini-2.5-pro."""
+    """strong/gemini must pick gemini-3.1-pro-preview."""
     monkeypatch.setenv("STRONG_LLM_PROVIDER", "gemini")
     monkeypatch.setattr(provider, "ChatGoogleGenerativeAI", _RecordingChatModel)
 
     model = provider.get_llm("strong")
 
     assert isinstance(model, _RecordingChatModel)
-    assert model.kwargs["model"] == "gemini-2.5-pro"
+    assert model.kwargs["model"] == "gemini-3.1-pro-preview"
 
 
 def test_unknown_provider_raises_value_error(monkeypatch: pytest.MonkeyPatch) -> None:
