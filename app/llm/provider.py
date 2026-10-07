@@ -20,12 +20,12 @@ _MODELS = {
     "fast": {
         "anthropic": "claude-haiku-4-5-20251001",
         "openai": "gpt-4o-mini",
-        "gemini": "gemini-2.5-flash",
+        "gemini": "gemini-3.8-flash",
     },
     "strong": {
         "anthropic": "claude-sonnet-5",  # ADR-004 says claude-sonnet-4-5; that name's stale
         "openai": "gpt-4o",
-        "gemini": "gemini-2.5-pro",
+        "gemini": "gemini-3.1-pro-preview",  # preview; tool calling untested (quota error)
     },
 }
 
