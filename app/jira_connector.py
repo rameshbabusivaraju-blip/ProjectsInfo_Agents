@@ -409,6 +409,27 @@ WHERE e.from_points IS NOT NULL
 ORDER BY s.start_date, e.changed_at
 """
 
+# Open stories under the Connectors epic — catalogue question B1.
+#
+# The epic is found by its summary ("Phase 3 — Connectors and ingestion"), not by a
+# fixed key, so recreating the epic does not break the query. hierarchy_level = 1 means
+# an epic. "Open" uses status_category, the same as VELOCITY_SQL. This project's Jira has
+# Feature and Task types rather than Story, so every ticket under the epic counts. The
+# catalogue asks "how many", so exactly one row comes back: the count, and the keys in
+# order. The inner SELECT sorts the keys before GROUP_CONCAT joins them into one text.
+OPEN_CONNECTORS_STORIES_SQL = """
+SELECT COUNT(*) AS open_stories, GROUP_CONCAT(key, ', ') AS tickets
+FROM (
+    SELECT t.key
+    FROM tickets t
+    JOIN tickets e ON e.key = t.parent_key
+    WHERE e.hierarchy_level = 1
+      AND e.summary LIKE '%Connectors%'
+      AND t.status_category != 'done'
+    ORDER BY t.key
+)
+"""
+
 def velocity() -> None:
     """Print points delivered per sprint — catalogue question A1."""
     with Session(engine) as session:

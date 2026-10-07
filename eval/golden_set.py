@@ -33,7 +33,7 @@ from app.github_connector import (
     REVIEW_TURNAROUND_SQL,
     UNREVIEWED_PRS_SQL,
 )
-from app.jira_connector import VELOCITY_SQL
+from app.jira_connector import OPEN_CONNECTORS_STORIES_SQL, VELOCITY_SQL
 
 
 @dataclass(frozen=True)
@@ -98,5 +98,11 @@ GOLDEN_SET: list[GoldenQuestion] = [
         question="Which branches do not follow the AGENTS-<n>-description convention?",
         metric_key="non_convention_branches",
         reference_sql=NON_CONVENTION_BRANCHES_SQL,
+    ),
+    GoldenQuestion(
+        id="B1",
+        question="How many stories are still open under the Connectors epic?",
+        metric_key="open_connectors_stories",
+        reference_sql=OPEN_CONNECTORS_STORIES_SQL,
     ),
 ]

@@ -21,7 +21,8 @@ from app.github_connector import (
     LONG_OPEN_PRS_SQL,
     NON_CONVENTION_BRANCHES_SQL,
 )
-from app.models import Commit, PullRequest
+from app.jira_connector import OPEN_CONNECTORS_STORIES_SQL
+from app.models import Commit, PullRequest, Ticket
 
 
 def _new_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Session:
@@ -355,3 +356,70 @@ def test_refuse_path_names_the_naming_convention_question() -> None:
     state = agent.refuse_path({"question": "what is the weather"})
 
     assert "branches that break the naming convention" in state["answer"]
+
+
+# ---------------------------------------------------------------------------
+# AGENTS-59 — B1: how many stories are still open under the Connectors epic
+# ---------------------------------------------------------------------------
+
+
+def _ticket(
+    key: str, summary: str, category: str, level: int = 0, parent: str | None = None
+) -> Ticket:
+    """A ticket; level 1 is an epic, level 0 an ordinary ticket, category 'done' means finished."""
+    return Ticket(
+        key=key,
+        summary=summary,
+        issue_type="Epic" if level == 1 else "Task",
+        hierarchy_level=level,
+        status="Done" if category == "done" else "To Do",
+        status_category=category,
+        parent_key=parent,
+        created=datetime(2026, 1, 1),
+        updated=datetime(2026, 1, 1),
+    )
+
+
+def test_query_map_open_connectors_stories_uses_open_connectors_stories_sql() -> None:
+    """open_connectors_stories must run jira_connector's own OPEN_CONNECTORS_STORIES_SQL."""
+    assert agent._QUERY_MAP["open_connectors_stories"] is OPEN_CONNECTORS_STORIES_SQL
+
+
+def test_metric_path_runs_open_connectors_stories_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only unfinished tickets under the Connectors epic are counted, and their keys listed."""
+    with _new_db(tmp_path, monkeypatch) as session:
+        session.add(_ticket("AGENTS-22", "Phase 3 — Connectors and ingestion", "new", level=1))
+        session.add(_ticket("AGENTS-45", "Phase 6 — Frontend and publish", "new", level=1))
+        session.add(_ticket("AGENTS-23", "Jira connector", "done", parent="AGENTS-22"))
+        session.add(_ticket("AGENTS-54", "Actions connector", "new", parent="AGENTS-22"))
+        session.add(_ticket("AGENTS-24", "GitHub connector", "indeterminate", parent="AGENTS-22"))
+        session.add(_ticket("AGENTS-52", "Frontend", "new", parent="AGENTS-45"))
+        session.commit()
+
+    state = agent.metric_path({"metric_key": "open_connectors_stories"})
+
+    # AGENTS-23 is done and AGENTS-52 sits under another epic, so only two count.
+    assert state["rows"] == [{"open_stories": 2, "tickets": "AGENTS-24, AGENTS-54"}]
+
+
+def test_metric_path_counts_zero_open_connectors_stories(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With nothing open the answer is still one row, with a count of 0."""
+    with _new_db(tmp_path, monkeypatch) as session:
+        session.add(_ticket("AGENTS-22", "Phase 3 — Connectors and ingestion", "new", level=1))
+        session.add(_ticket("AGENTS-23", "Jira connector", "done", parent="AGENTS-22"))
+        session.commit()
+
+    state = agent.metric_path({"metric_key": "open_connectors_stories"})
+
+    assert state["rows"] == [{"open_stories": 0, "tickets": None}]
+
+
+def test_refuse_path_names_the_open_connectors_stories_question() -> None:
+    """The refusal text must list the new question so a user knows it can be asked."""
+    state = agent.refuse_path({"question": "what is the weather"})
+
+    assert "open tickets under the Connectors epic" in state["answer"]
