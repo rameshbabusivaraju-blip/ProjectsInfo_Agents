@@ -8,9 +8,8 @@ own CLI (python -m app.agent) already calls.
 /ask and /files need an X-API-Key header (AGENTS-53); /health stays open so
 the host can check the service without a key.
 """
+
 import os
-from pathlib import Path
-from typing import Any
 from pathlib import Path
 from typing import Any
 
