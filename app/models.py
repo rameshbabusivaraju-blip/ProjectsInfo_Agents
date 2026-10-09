@@ -172,3 +172,14 @@ class PipelineJob(SQLModel, table=True):
     # success, failure, cancelled or skipped. None while the job is still going.
     conclusion: str | None = None
     completed_at: datetime | None = None
+
+
+class SyncStatus(SQLModel, table=True):
+    """When each connector last copied its source into this database (ADR-023)."""
+
+    __tablename__ = "sync_status"
+
+    # jira, github, actions or confluence
+    source: str = Field(primary_key=True)
+    # Naive UTC, like every other timestamp in the store.
+    last_synced_at: datetime

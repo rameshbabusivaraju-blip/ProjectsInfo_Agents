@@ -15,7 +15,16 @@ from sqlalchemy import Engine
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import jira_connector
-from app.models import Commit, ConfluencePage, EstimateChange, Person, Sprint, Ticket, WorkLog
+from app.models import (
+    Commit,
+    ConfluencePage,
+    EstimateChange,
+    Person,
+    Sprint,
+    SyncStatus,
+    Ticket,
+    WorkLog,
+)
 
 _USER = {"accountId": "acc-1", "displayName": "Ramesh"}
 
@@ -91,6 +100,12 @@ def test_load_keeps_github_and_confluence_rows(engine: Engine) -> None:
         assert len(session.exec(select(Commit)).all()) == 1
         assert len(session.exec(select(ConfluencePage)).all()) == 1
 
+def test_load_records_when_jira_was_synced(engine: Engine) -> None:
+    """The sync time is saved so the agent can tell how old the stored data is (AGENTS-91)."""
+    jira_connector.load()
+
+    with Session(engine) as session:
+        assert [s.source for s in session.exec(select(SyncStatus)).all()] == ["jira"]
 
 def test_load_replaces_jira_rows_and_updates_people(engine: Engine) -> None:
     """Old Jira rows go, new ones arrive, and the shared person is updated in place."""

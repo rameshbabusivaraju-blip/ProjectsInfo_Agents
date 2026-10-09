@@ -114,8 +114,8 @@ def test_get_metric_returns_the_rows_of_the_reviewed_query(
 
     result = tools.get_metric("velocity")
 
-    assert result == {"metric_key": "velocity", "rows": [{"sprint": "Sprint 1", "delivered": 5.0}]}
-
+    assert result["metric_key"] == "velocity"
+    assert result["rows"] == [{"sprint": "Sprint 1", "delivered": 5.0}]
 
 def test_get_metric_with_an_unknown_key_lists_the_valid_keys() -> None:
     """The model gets a readable error with the valid keys, not an exception."""

@@ -25,4 +25,5 @@ def test_schema_creates_expected_tables() -> None:
         "confluence_pages",
         "pipeline_runs",
         "pipeline_jobs",
+        "sync_status"
     }

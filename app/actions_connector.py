@@ -17,6 +17,7 @@ from sqlalchemy import delete, text
 from sqlmodel import Session
 
 from app.db import engine, init_db
+from app.freshness import record_sync
 from app.github_connector import HEADERS, REPO_URL, _dt, _required_dt
 from app.models import PipelineJob, PipelineRun
 
@@ -125,6 +126,7 @@ def load() -> None:
         for row in job_rows:
             session.add(row)
 
+        record_sync(session, "actions")
         session.commit()
 
     print(f"Loaded {len(runs)} pipeline runs, {len(job_rows)} jobs")
