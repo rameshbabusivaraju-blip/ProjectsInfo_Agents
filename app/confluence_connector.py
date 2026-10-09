@@ -23,6 +23,7 @@ from sqlalchemy import delete
 from sqlmodel import Session
 
 from app.db import engine, init_db
+from app.freshness import record_sync
 from app.models import ConfluencePage, Person
 
 load_dotenv()
@@ -144,6 +145,7 @@ def load() -> None:
         for person in people.values():
             session.merge(person)
 
+        record_sync(session, "confluence")
         session.commit()
 
     print(f"Loaded {len(pages)} Confluence pages from space '{CONFLUENCE_SPACE_KEY}'")
