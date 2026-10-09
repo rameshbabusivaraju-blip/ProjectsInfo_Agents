@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app import agent
 from app.excel_export import export_to_excel
+from app.freshness import SOURCE_FOR_METRIC, get_freshness
 
 # One line per metric_key. The model reads these lines to choose a key. A test checks that
 # this dict has exactly the keys of agent._QUERY_MAP, so a new query cannot be left out.
@@ -82,7 +83,11 @@ def get_metric(metric_key: str, ticket_key: str | None = None) -> dict[str, Any]
         rows = _rows_for(metric_key, cleaned)
     except sqlite3.Error as exc:
         return {"error": f"Database error: {exc}"}
-    result: dict[str, Any] = {"metric_key": metric_key, "rows": rows}
+    result: dict[str, Any] = {
+        "metric_key": metric_key,
+        "rows": rows,
+        "freshness": get_freshness(str(agent.DB_PATH), SOURCE_FOR_METRIC[metric_key]),
+    }
     if not rows:
         result["message"] = "The stored data has no rows for this question."
     return result
@@ -100,7 +105,11 @@ def search_documents(query: str, doc_type: str) -> dict[str, Any]:
     except Exception as exc:  # a failing search must not end the loop
         return {"error": f"Document search failed: {exc}"}
     sources = state.get("sources", [])
-    result: dict[str, Any] = {"doc_type": doc_type, "sources": sources}
+    result: dict[str, Any] = {
+        "doc_type": doc_type,
+        "sources": sources,
+        "freshness": get_freshness(str(agent.DB_PATH), "confluence"),
+    }
     if not sources:
         result["message"] = f"No matching content found in the project's {doc_type} documents."
     return result

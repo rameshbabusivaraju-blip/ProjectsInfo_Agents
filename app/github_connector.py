@@ -19,6 +19,7 @@ from sqlalchemy import delete, text
 from sqlmodel import Session
 
 from app.db import engine, init_db
+from app.freshness import record_sync
 from app.models import Commit, PrReview, PullRequest
 
 load_dotenv()
@@ -178,7 +179,7 @@ def load() -> None:
 
         for row in review_rows:
             session.add(row)
-
+        record_sync(session, "github")
         session.commit()
 
     print(

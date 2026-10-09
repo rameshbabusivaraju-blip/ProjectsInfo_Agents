@@ -19,6 +19,7 @@ from sqlalchemy import delete, text
 from sqlmodel import Session
 
 from app.db import engine, init_db
+from app.freshness import record_sync
 from app.models import EstimateChange, Person, Sprint, Ticket, TicketSprint, WorkLog
 
 # Read .env into the process environment. Secrets never live in this file.
@@ -312,6 +313,7 @@ def load() -> None:
 
         # One commit for the whole load: either the mirror is complete or the
         # transaction rolls back and nothing is written.
+        record_sync(session, "jira")
         session.commit()
 
     print(f"Loaded {len(sprints)} sprints, {len(issues)} issues, {len(work_logs)} work logs")

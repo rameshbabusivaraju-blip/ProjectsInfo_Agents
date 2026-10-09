@@ -15,7 +15,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import actions_connector, agent
 from app.actions_connector import DORA_PER_SPRINT_SQL, FAILED_RUNS_BY_STAGE_SQL
-from app.models import Commit, PipelineJob, PipelineRun, Sprint
+from app.models import Commit, PipelineJob, PipelineRun, Sprint, SyncStatus
 
 
 def _new_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Session:
@@ -214,7 +214,7 @@ def test_load_replaces_pipeline_rows_and_leaves_other_tables_alone(
         assert [r.id for r in session.exec(select(PipelineRun)).all()] == [2]
         assert [j.id for j in session.exec(select(PipelineJob)).all()] == [20]
         assert [c.sha for c in session.exec(select(Commit)).all()] == ["keep-me"]
-
+        assert [s.source for s in session.exec(select(SyncStatus)).all()] == ["actions"]
 
 # ---------------------------------------------------------------------------
 # The two queries
