@@ -42,6 +42,4 @@ jobs:
       - name: Trigger Render deploy
         run: curl --fail --silent --show-error -X POST "$DEPLOY_HOOK"
         env:
-          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL_MISSING }}
-
-                    
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
