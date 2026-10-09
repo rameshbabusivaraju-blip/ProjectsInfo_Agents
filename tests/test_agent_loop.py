@@ -311,3 +311,125 @@ def test_missing_token_counts_are_treated_as_zero(script: Callable[..., Scripted
     script(AIMessage(content="No numbers here."))
 
     assert agent_loop.run_loop("Hi")["tokens"] == 0
+
+
+# ---------------------------------------------------------------------------
+# loop_result: the final state in the fields /ask returns
+# ---------------------------------------------------------------------------
+
+PASSAGE = {
+    "title": "RAID Log",
+    "url": "https://wiki.example/raid",
+    "text": "R2 unowned",
+    "score": 0.9,
+}
+
+
+def _state(
+    *outcomes: tuple[str, dict[str, Any]], answer: str = "An answer."
+) -> agent_loop.LoopState:
+    """A finished loop state whose tool messages hold the given (tool name, result) pairs."""
+    messages: list[BaseMessage] = [HumanMessage(content="A question")]
+    for index, (name, result) in enumerate(outcomes):
+        messages.append(
+            ToolMessage(content=json.dumps(result), tool_call_id=f"call_{index}", name=name)
+        )
+    return {"question": "A question", "messages": messages, "answer": answer}
+
+
+def test_result_for_a_metric_answer() -> None:
+    result = agent_loop.loop_result(_state(("get_metric", VELOCITY)))
+
+    assert result == {
+        "question": "A question",
+        "answer": "An answer.",
+        "metric_key": "velocity",
+        "rows": VELOCITY["rows"],
+        "sources": [],
+    }
+
+
+def test_result_for_a_document_answer() -> None:
+    result = agent_loop.loop_result(
+        _state(("search_documents", {"doc_type": "raid_log", "sources": [PASSAGE]}))
+    )
+
+    assert result["metric_key"] == "narrative"
+    assert result["rows"] == []
+    assert result["sources"] == [PASSAGE]
+
+
+def test_result_for_a_number_with_a_reason_is_hybrid() -> None:
+    result = agent_loop.loop_result(
+        _state(
+            ("get_metric", VELOCITY),
+            ("search_documents", {"doc_type": "retro", "sources": [PASSAGE]}),
+        )
+    )
+
+    assert result["metric_key"] == "hybrid"
+    assert result["rows"] == VELOCITY["rows"]
+    assert result["sources"] == [PASSAGE]
+
+
+def test_result_for_an_export_carries_the_file_and_the_rows() -> None:
+    export = {
+        "file_path": "exports/velocity_last.xlsx",
+        "rows": VELOCITY["rows"],
+        "rows_written": 1,
+    }
+
+    result = agent_loop.loop_result(_state(("export_excel", export)))
+
+    assert result["metric_key"] == "export_excel"
+    assert result["file_path"] == "exports/velocity_last.xlsx"
+    assert result["rows"] == VELOCITY["rows"]
+
+
+def test_result_without_any_tool_is_other_and_has_no_file() -> None:
+    """A refusal, a definition or a clarifying question used no tool."""
+    result = agent_loop.loop_result(_state())
+
+    assert result["metric_key"] == "other"
+    assert result["rows"] == []
+    assert result["sources"] == []
+    assert "file_path" not in result
+
+
+def test_result_takes_the_rows_of_the_latest_call_that_returned_rows() -> None:
+    dora = {"metric_key": "dora_per_sprint", "rows": [{"sprint": "Sprint 4", "deployments": 1}]}
+    empty = {"metric_key": "unreviewed_prs", "rows": [], "message": "no rows"}
+
+    result = agent_loop.loop_result(
+        _state(("get_metric", VELOCITY), ("get_metric", dora), ("get_metric", empty))
+    )
+
+    assert result["rows"] == dora["rows"]
+    assert result["metric_key"] == "unreviewed_prs"  # the key the model asked about last
+
+
+def test_result_lists_each_passage_once() -> None:
+    """Repeated searches often return the same passage."""
+    search = {"doc_type": "retro", "sources": [PASSAGE]}
+
+    result = agent_loop.loop_result(
+        _state(("search_documents", search), ("search_documents", search))
+    )
+
+    assert result["sources"] == [PASSAGE]
+
+
+def test_result_ignores_tool_errors() -> None:
+    result = agent_loop.loop_result(
+        _state(("get_metric", {"error": "Unknown metric_key 'x'."}), ("get_metric", VELOCITY))
+    )
+
+    assert result["metric_key"] == "velocity"
+    assert result["rows"] == VELOCITY["rows"]
+
+
+def test_result_without_an_answer_uses_the_plain_message() -> None:
+    state = _state()
+    del state["answer"]
+
+    assert agent_loop.loop_result(state)["answer"] == agent_loop.NO_ANSWER

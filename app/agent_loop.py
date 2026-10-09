@@ -10,6 +10,9 @@ first. If a number is not in the data, the model is asked once to rewrite the an
 retry fails too, the answer is returned with a notice. The loop makes at most MAX_STEPS model
 calls per question.
 
+loop_result() turns the final state into the same fields the fixed agent returns (answer,
+metric_key, rows, sources, file_path), so /ask keeps its response shape.
+
 This file also holds the one system prompt of the loop, so a rule changes here and nowhere
 else. The prompt does not list the metric keys or document types. The model reads those in
 the tool descriptions in app/tools.py, so they exist in only one place.
@@ -211,3 +214,70 @@ def run_loop(question: str) -> LoopState:
         len(final.get("tool_results", [])),
     )
     return final
+
+
+def _tool_outcomes(state: LoopState) -> list[tuple[str, dict[str, Any]]]:
+    """The (tool name, result) of every tool call, in the order the tools ran."""
+    outcomes: list[tuple[str, dict[str, Any]]] = []
+    for message in state.get("messages", []):
+        if not isinstance(message, ToolMessage):
+            continue
+        try:
+            result = json.loads(str(message.content))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(result, dict):
+            outcomes.append((message.name or "", result))
+    return outcomes
+
+
+def loop_result(state: LoopState) -> dict[str, Any]:
+    """Turn the final loop state into the fields /ask returns, named as the fixed agent names them.
+
+    rows come from the most recent get_metric or export_excel call that returned rows. sources
+    are the passages of all document searches, each once. file_path is the last file written.
+    metric_key is "export_excel", "hybrid" (rows and passages), "narrative" (passages only), the
+    key of the last get_metric call, or "other" when no tool gave data (a refusal, a definition
+    or a clarifying question).
+    """
+    rows: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    seen: set[tuple[Any, Any, Any]] = set()
+    file_path: str | None = None
+    last_metric_key: str | None = None
+
+    for name, result in _tool_outcomes(state):
+        if "error" in result:
+            continue
+        if name == "get_metric":
+            last_metric_key = result.get("metric_key")
+        if name in ("get_metric", "export_excel") and result.get("rows"):
+            rows = result["rows"]
+        if name == "export_excel" and result.get("file_path"):
+            file_path = result["file_path"]
+        if name == "search_documents":
+            for source in result.get("sources", []):
+                identity = (source.get("title"), source.get("url"), source.get("text"))
+                if identity not in seen:
+                    seen.add(identity)
+                    sources.append(source)
+
+    if file_path:
+        metric_key = "export_excel"
+    elif rows and sources:
+        metric_key = "hybrid"
+    elif sources:
+        metric_key = "narrative"
+    else:
+        metric_key = last_metric_key or "other"
+
+    result_fields: dict[str, Any] = {
+        "question": state.get("question", ""),
+        "answer": state.get("answer", NO_ANSWER),
+        "metric_key": metric_key,
+        "rows": rows,
+        "sources": sources,
+    }
+    if file_path:
+        result_fields["file_path"] = file_path
+    return result_fields

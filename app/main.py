@@ -8,7 +8,9 @@ own CLI (python -m app.agent) already calls.
 /ask and /files need an X-API-Key header (AGENTS-53); /health stays open so
 the host can check the service without a key.
 """
-
+import os
+from pathlib import Path
+from typing import Any
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.agent import agent
+from app.agent_loop import loop_result, run_loop
 from app.auth import require_api_key
 from app.excel_export import EXPORTS_DIR
 
@@ -72,14 +75,28 @@ class AskResponse(BaseModel):
     file_url: str | None = None
 
 
+def _run_agent(question: str) -> dict[str, Any]:
+    """Answer with the fixed agent or the tool-calling loop, as the AGENT_MODE setting says.
+
+    "fixed" (the default) is the agent in app/agent.py. "loop" is the tool-calling loop in
+    app/agent_loop.py (ADR-022). Both return the same fields, so /ask answers the same way.
+    """
+    mode = os.environ.get("AGENT_MODE", "fixed")
+    if mode == "fixed":
+        return agent.invoke({"question": question})
+    if mode == "loop":
+        return loop_result(run_loop(question))
+    raise HTTPException(status_code=503, detail="AGENT_MODE must be 'fixed' or 'loop'.")
+
+
 @app.post("/ask", dependencies=[Depends(require_api_key)])
 def ask(request: AskRequest) -> AskResponse:
     """Run a question through the agent and return its answer.
 
-    A thin wrapper. All the real logic already lives in app.agent -- this
-    just exposes agent.invoke() over HTTP.
+    A thin wrapper. All the real logic already lives in app.agent and app.agent_loop --
+    this just exposes one of them over HTTP, chosen by AGENT_MODE.
     """
-    result = agent.invoke({"question": request.question})
+    result = _run_agent(request.question)
     file_path = result.get("file_path")
     return AskResponse(
         question=request.question,
