@@ -89,8 +89,8 @@ def test_prompt_does_not_repeat_the_lists_in_the_tool_descriptions() -> None:
 
 
 def test_prompt_numbers_its_rules_without_gaps() -> None:
-    """Rules 1 to 10 are all present, so a deleted rule is noticed."""
-    for number in range(1, 11):
+    """Rules 1 to 11 are all present, so a deleted rule is noticed."""
+    for number in range(1, 12):
         assert f"\n{number}. " in SYSTEM_PROMPT
 
 
@@ -120,7 +120,7 @@ def test_the_graph_has_the_shape_in_adr_022() -> None:
 
 
 def test_model_is_the_strong_tier_with_the_tools_bound(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_model asks for the strong model and binds all three tools to it."""
+    """_model asks for the strong model and binds every tool to it."""
     seen: dict[str, Any] = {}
 
     class FakeLlm:

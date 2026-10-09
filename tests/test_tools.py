@@ -93,7 +93,17 @@ def test_document_types_match_the_classifiers_list() -> None:
 def test_tool_descriptions_list_every_key_the_model_may_choose() -> None:
     """The model sees every metric key and document type in the tool descriptions."""
     by_name = {tool.name: tool for tool in tools.TOOLS}
-    assert set(by_name) == {"get_metric", "search_documents", "export_excel"}
+    assert set(by_name) == {
+        "get_metric",
+        "search_documents",
+        "export_excel",
+        "live_jira_ticket",
+        "live_jira_search",
+        "live_github_pull_requests",
+        "live_github_commits",
+        "live_confluence_page",
+    }
+    assert tools.LIVE_TOOL_NAMES == {name for name in by_name if name.startswith("live_")}
     for key in tools.METRIC_DESCRIPTIONS:
         assert key in by_name["get_metric"].description
     for doc_type in tools.DOC_TYPE_DESCRIPTIONS:

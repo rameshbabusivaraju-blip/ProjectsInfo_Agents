@@ -15,7 +15,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, ValidationError
 
-from app import agent
+from app import agent, live_confluence, live_github, live_jira
 from app.excel_export import export_to_excel
 from app.freshness import SOURCE_FOR_METRIC, get_freshness
 
@@ -178,7 +178,8 @@ TOOLS: list[StructuredTool] = [
         description=(
             "Run a reviewed query over the project's stored Jira, GitHub and pipeline data "
             "and return its rows. Use it for any number, count or list about sprints, tickets, "
-            "pull requests, commits, branches or pipeline runs. Choose metric_key from:\n"
+            "pull requests, commits, branches or pipeline runs. The result includes freshness: "
+            "when the data was last synced and whether it is stale. Choose metric_key from:\n"
             + _listing(METRIC_DESCRIPTIONS)
         ),
         args_schema=GetMetricArgs,
@@ -189,7 +190,8 @@ TOOLS: list[StructuredTool] = [
         description=(
             "Search the project's own documents (Confluence pages) and return the best "
             "matching passages with their page titles. Use it for reasons, decisions, risks "
-            "and notes. Choose doc_type from:\n" + _listing(DOC_TYPE_DESCRIPTIONS)
+            "and notes. The result includes freshness: when the pages were last synced and "
+            "whether they are stale. Choose doc_type from:\n" + _listing(DOC_TYPE_DESCRIPTIONS)
         ),
         args_schema=SearchDocumentsArgs,
     ),
@@ -204,12 +206,65 @@ TOOLS: list[StructuredTool] = [
         ),
         args_schema=ExportExcelArgs,
     ),
+    StructuredTool.from_function(
+        func=live_jira.live_jira_ticket,
+        name="live_jira_ticket",
+        description=live_jira.TICKET_DESCRIPTION,
+        args_schema=live_jira.LiveJiraTicketArgs,
+    ),
+    StructuredTool.from_function(
+        func=live_jira.live_jira_search,
+        name="live_jira_search",
+        description=live_jira.SEARCH_DESCRIPTION,
+        args_schema=live_jira.LiveJiraSearchArgs,
+    ),
+    StructuredTool.from_function(
+        func=live_github.live_github_pull_requests,
+        name="live_github_pull_requests",
+        description=live_github.PULL_REQUESTS_DESCRIPTION,
+        args_schema=live_github.LiveGithubPullRequestsArgs,
+    ),
+    StructuredTool.from_function(
+        func=live_github.live_github_commits,
+        name="live_github_commits",
+        description=live_github.COMMITS_DESCRIPTION,
+        args_schema=live_github.LiveGithubCommitsArgs,
+    ),
+    StructuredTool.from_function(
+        func=live_confluence.live_confluence_page,
+        name="live_confluence_page",
+        description=live_confluence.PAGE_DESCRIPTION,
+        args_schema=live_confluence.LiveConfluencePageArgs,
+    ),
 ]
+
+# The tools that read Jira, GitHub or Confluence directly (ADR-023). The loop limits how many
+# of these one question may use.
+LIVE_TOOL_NAMES = frozenset(
+    {
+        "live_jira_ticket",
+        "live_jira_search",
+        "live_github_pull_requests",
+        "live_github_commits",
+        "live_confluence_page",
+    }
+)
 
 _TOOL_TABLE: dict[str, tuple[Callable[..., dict[str, Any]], type[BaseModel]]] = {
     "get_metric": (get_metric, GetMetricArgs),
     "search_documents": (search_documents, SearchDocumentsArgs),
     "export_excel": (export_excel, ExportExcelArgs),
+    "live_jira_ticket": (live_jira.live_jira_ticket, live_jira.LiveJiraTicketArgs),
+    "live_jira_search": (live_jira.live_jira_search, live_jira.LiveJiraSearchArgs),
+    "live_github_pull_requests": (
+        live_github.live_github_pull_requests,
+        live_github.LiveGithubPullRequestsArgs,
+    ),
+    "live_github_commits": (live_github.live_github_commits, live_github.LiveGithubCommitsArgs),
+    "live_confluence_page": (
+        live_confluence.live_confluence_page,
+        live_confluence.LiveConfluencePageArgs,
+    ),
 }
 
 
