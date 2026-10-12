@@ -187,3 +187,11 @@ def test_the_budget_is_counted_across_steps_and_stored_tools_do_not_use_it(
 def test_every_live_tool_is_in_the_budget_and_the_dispatch_table() -> None:
     for name in tools.LIVE_TOOL_NAMES:
         assert name in tools._TOOL_TABLE
+
+
+def test_the_prompt_treats_an_empty_fresh_result_as_the_answer() -> None:
+    """AGENTS-84: the loop went live for commits that do not exist. Fresh and empty is final."""
+    prompt = agent_loop.SYSTEM_PROMPT
+    assert "when stale is false" in prompt
+    assert "do not go live" in prompt
+    assert "may have been created after the last sync" in prompt

@@ -16,9 +16,11 @@ That review happened once, carefully, when the query was written, per
 ADR-015's rule that a reference query is reviewed as carefully as production
 code.
 
-Narrative and hybrid golden questions wait for the Confluence connector and
-use ADR-015's other mechanism, a frozen snapshot under eval/snapshot_<date>/
-— out of scope here.
+Questions that need document passages (AGENTS-84) have no reference SQL for the
+text part. They pass when the expected page appears in the answer's sources, so
+the check is on retrieval and routing, not on the wording of the answer. The
+passages come from the stored index, so a fresh Confluence sync can change the
+result; ADR-015's frozen snapshot (eval/snapshot_<date>/) is still not built.
 """
 
 from __future__ import annotations
@@ -41,9 +43,15 @@ from app.jira_connector import OPEN_CONNECTORS_STORIES_SQL, SPILLED_OVER_TICKETS
 class GoldenQuestion:
     """One golden-set entry: a catalogue question paired with its reference query.
 
-    metric_key must match a key in app.agent._QUERY_MAP. That is what lets
-    evaluate.py (AGENTS-33) send `question` through the real agent and check
-    its answer against reference_sql's result, without hardcoding SQL twice.
+    metric_key must match a key in app.agent._QUERY_MAP when reference_sql is
+    set. That is what lets evaluate.py (AGENTS-33) send `question` through the
+    real agent and check its answer against reference_sql's result, without
+    hardcoding SQL twice.
+
+    expected_sources (AGENTS-84) lists words that must each appear in the title
+    of at least one source page, ignoring case: ("decision log",) matches the
+    page "03 Decision Log". A question may have reference_sql, expected_sources
+    or both; every check it has must pass.
 
     params holds the value for each :name placeholder in reference_sql, such as
     the ticket key for C3. Most questions have none.
@@ -51,9 +59,15 @@ class GoldenQuestion:
 
     id: str
     question: str
-    metric_key: str
-    reference_sql: str
+    metric_key: str | None = None
+    reference_sql: str | None = None
     params: dict[str, str] = field(default_factory=dict)
+    expected_sources: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """A question with nothing to check can never fail, so it is refused here."""
+        if self.reference_sql is None and not self.expected_sources:
+            raise ValueError(f"{self.id}: needs reference_sql or expected_sources")
 
 
 GOLDEN_SET: list[GoldenQuestion] = [
@@ -123,5 +137,17 @@ GOLDEN_SET: list[GoldenQuestion] = [
             question="How many pipeline runs failed this sprint, and at which stage?",
             metric_key="failed_runs_by_stage",
             reference_sql=FAILED_RUNS_BY_STAGE_SQL,
+    ),
+    GoldenQuestion(
+        id="N1",
+        question="How are code reviews done in this project?",
+        expected_sources=("decision log",),
+    ),
+    GoldenQuestion(
+        id="H1",
+        question="What was the velocity of each sprint, and why did it change?",
+        metric_key="velocity",
+        reference_sql=VELOCITY_SQL,
+        expected_sources=("retro",),
     ),
 ]
